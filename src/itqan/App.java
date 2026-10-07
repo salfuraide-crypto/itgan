@@ -30,7 +30,9 @@ public final class App {
         Store store = new Store(backend);
         Api api = new Api(store, uploads);
         synchronized (store) {
-            api.seedTrainer(env("ITQAN_TRAINER_EMAIL", "trainer@itqan.test"), env("ITQAN_TRAINER_PASSWORD", "itqan123"));
+            // ITQAN_TRAINER_* are the older names of the same settings and still work.
+            api.seedAdmin(env("ITQAN_ADMIN_EMAIL", env("ITQAN_TRAINER_EMAIL", "admin@itqan.test")),
+                    env("ITQAN_ADMIN_PASSWORD", env("ITQAN_TRAINER_PASSWORD", "itqan123")));
             store.flush();
         }
 

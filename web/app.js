@@ -12,7 +12,8 @@ const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
 const esc = (v) => String(v == null ? '' : v).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const initial = (s) => (String(s || '').trim()[0] || '؟');
-const homeOf = (me) => (me && me.role === 'trainer' ? '/t' : '/s');
+const homeOf = (me) => (!me ? '/' : me.role === 'admin' ? '/a' : me.role === 'trainer' ? '/t' : '/s');
+const isStaff = (role) => role === 'trainer' || role === 'admin';
 function go(path) {
   if (location.hash === '#' + path) router();
   else location.hash = path;
@@ -111,7 +112,7 @@ async function api(path, method = 'GET', body) {
     if (res.status === 401 && state.me && !path.startsWith('/auth/')) {
       const role = state.me.role;
       state.me = null;
-      go(role === 'trainer' ? '/trainer/login' : '/login');
+      go(isStaff(role) ? '/trainer/login' : '/login');
     }
     throw new Error(data.error || 'حدث خطأ غير متوقع');
   }
@@ -257,7 +258,7 @@ async function router() {
     r.keys.forEach((k, i) => { params[k] = decodeURIComponent(m[i + 1]); });
     const role = r.opts.role;
     if (role && (!state.me || state.me.role !== role)) {
-      return go(state.me ? homeOf(state.me) : role === 'trainer' ? '/trainer/login' : '/login');
+      return go(state.me ? homeOf(state.me) : isStaff(role) ? '/trainer/login' : '/login');
     }
     if (r.opts.guest && state.me) return go(homeOf(state.me));
     const ctx = { params, query, stale: () => seq !== navSeq };
@@ -286,6 +287,11 @@ const TRAINER_NAV = [
   ['exams', '/t/exams', 'exam', 'الاختبارات'],
   ['trainees', '/t/trainees', 'users', 'المتدربون والنتائج'],
 ];
+const ADMIN_NAV = [
+  ['dashboard', '/a', 'home', 'الرئيسية'],
+  ['trainers', '/a/trainers', 'users', 'المدربون'],
+  ['trainees', '/a/trainees', 'book', 'المتدربون'],
+];
 const TRAINEE_NAV = [
   ['courses', '/s', 'book', 'دوراتي'],
   ['videos', '/s/videos', 'video', 'الفيديوهات'],
@@ -306,18 +312,20 @@ function publicShell() {
   </div>`;
 }
 
-function trainerShell() {
+function trainerShell(admin = false) {
   const me = state.me;
+  const home = admin ? '/a' : '/t';
+  const nav = admin ? ADMIN_NAV : TRAINER_NAV;
   return `<div class="t-shell">
     <aside class="sidebar">
-      <a class="brand" href="#/t">${logo()}<span>إتقان<small>لوحة المدرب</small></span></a>
-      <nav>${TRAINER_NAV.map(([k, href, ic, label]) => `<a href="#${href}" data-nav="${k}">${icon(ic)}<span>${label}</span></a>`).join('')}</nav>
+      <a class="brand" href="#${home}">${logo()}<span>إتقان<small>${admin ? 'لوحة الإدارة' : 'لوحة المدرب'}</small></span></a>
+      <nav>${nav.map(([k, href, ic, label]) => `<a href="#${href}" data-nav="${k}">${icon(ic)}<span>${label}</span></a>`).join('')}</nav>
       <div class="side-user"><span class="avatar">${esc(initial(me.name))}</span><div><b>${esc(me.name)}</b><small>${esc(me.email)}</small></div>
         <button class="icon-btn" data-logout title="تسجيل الخروج" aria-label="تسجيل الخروج">${icon('logout')}</button></div>
     </aside>
     <div class="side-backdrop" data-close-side></div>
     <div class="t-main">
-      <header class="topbar"><button class="icon-btn" data-open-side aria-label="القائمة">${icon('menu')}</button><a class="brand" href="#/t">${logo()}<span>إتقان</span></a></header>
+      <header class="topbar"><button class="icon-btn" data-open-side aria-label="القائمة">${icon('menu')}</button><a class="brand" href="#${home}">${logo()}<span>إتقان</span></a></header>
       <main id="main" class="content"></main>
     </div>
   </div>`;
@@ -341,7 +349,7 @@ function traineeShell() {
 function startPage(shell, active) {
   const key = shell + ':' + (state.me ? state.me.id : '');
   if (app.dataset.shell !== key) {
-    app.innerHTML = shell === 'trainer' ? trainerShell() : shell === 'trainee' ? traineeShell() : publicShell();
+    app.innerHTML = shell === 'trainer' ? trainerShell() : shell === 'admin' ? trainerShell(true) : shell === 'trainee' ? traineeShell() : publicShell();
     app.dataset.shell = key;
   }
   $$('[data-nav]', app).forEach((a) => a.classList.toggle('active', a.dataset.nav === active));
@@ -362,7 +370,7 @@ document.addEventListener('click', async (e) => {
     try { await api('/auth/logout', 'POST'); } catch (err) { /* ignore */ }
     state.me = null;
     app.dataset.shell = '';
-    go(role === 'trainer' ? '/trainer/login' : '/');
+    go(isStaff(role) ? '/trainer/login' : '/');
   }
 });
 
@@ -445,8 +453,8 @@ route('/login', { guest: true }, async () => authPage({
 
 route('/trainer/login', { guest: true }, async () => authPage({
   trainer: true,
-  title: 'دخول المدربين',
-  sub: 'ادخل لإدارة دوراتك ومحتواك ومتابعة متدربيك.',
+  title: 'دخول المدربين والإدارة',
+  sub: 'ادخل لإدارة دوراتك ومحتواك ومتابعة متدربيك، أو لإدارة المنصة.',
   fields: field('البريد الإلكتروني', '<input type="email" name="email" autocomplete="email" required>')
     + field('كلمة المرور', '<input type="password" name="password" autocomplete="current-password" required>'),
   submit: 'دخول',
@@ -1627,6 +1635,113 @@ route('/s/banks/:id', { role: 'trainee' }, async (ctx) => {
   });
   ['#fq', '#ft', '#fd'].forEach((s) => { const el = $(s, main); if (el) el.addEventListener('input', draw); });
   draw();
+});
+
+/* =====================================================================
+   Admin
+   ===================================================================== */
+
+function trainerModal() {
+  modal({
+    title: 'إضافة مدرب',
+    submitText: 'إضافة المدرب',
+    body: field('اسم المدرب', '<input type="text" name="name" maxlength="80" required>')
+      + field('البريد الإلكتروني', '<input type="email" name="email" maxlength="120" required>')
+      + field('كلمة مرور مؤقتة', '<input type="text" name="password" minlength="6" autocomplete="off" required>', '6 أحرف على الأقل. أرسلها للمدرب ليدخل بها من بوابة المدربين.'),
+    async onSubmit(form) {
+      await api('/a/trainers', 'POST', { name: form.name.value, email: form.email.value, password: form.password.value });
+      toast('تمت إضافة المدرب', 'success');
+      router();
+    },
+  });
+}
+
+function adminTrainerTable(trainers) {
+  return `<div class="table-wrap"><table class="table">
+    <thead><tr><th>المدرب</th><th>الدورات</th><th>المتدربون</th><th>بنوك الأسئلة</th><th></th></tr></thead>
+    <tbody>${trainers.map((t) => `<tr>
+      <td data-label="المدرب"><b>${esc(t.name)}</b><small class="muted d-block" dir="ltr" style="text-align:right">${esc(t.email)}</small></td>
+      <td data-label="الدورات">${t.courses}</td>
+      <td data-label="المتدربون">${t.trainees}</td>
+      <td data-label="بنوك الأسئلة">${t.banks}</td>
+      <td><div class="row-actions">
+        <button class="btn btn-ghost btn-sm" data-reset="${t.id}">${icon('lock')} كلمة المرور</button>
+        <button class="icon-btn danger" data-del-t="${t.id}" title="حذف" aria-label="حذف">${icon('trash')}</button>
+      </div></td>
+    </tr>`).join('')}</tbody></table></div>`;
+}
+
+function bindTrainerActions(root, trainers) {
+  const find = (id) => trainers.find((t) => t.id === id);
+  $$('[data-reset]', root).forEach((b) => b.addEventListener('click', () => {
+    const t = find(b.dataset.reset);
+    modal({
+      title: `كلمة مرور جديدة لـ ${t.name}`,
+      submitText: 'تغيير كلمة المرور',
+      body: field('كلمة المرور الجديدة', '<input type="text" name="password" minlength="6" autocomplete="off" required>', 'سيُسجَّل خروج المدرب من أجهزته، ويدخل بكلمة المرور الجديدة.'),
+      async onSubmit(form) {
+        await api(`/a/trainers/${t.id}/password`, 'PUT', { password: form.password.value });
+        toast('تم تغيير كلمة المرور', 'success');
+      },
+    });
+  }));
+  $$('[data-del-t]', root).forEach((b) => b.addEventListener('click', async () => {
+    const t = find(b.dataset.delT);
+    const what = t.courses || t.banks ? ` سيُحذف معه ${t.courses} دورة و${t.banks} بنك أسئلة بكل محتواها ونتائج متدربيها.` : '';
+    if (!(await confirmBox(`حذف المدرب «${t.name}»؟${what} لا يمكن التراجع عن ذلك.`, { title: 'حذف المدرب', ok: 'حذف المدرب' }))) return;
+    try { await api(`/a/trainers/${t.id}`, 'DELETE'); toast('تم حذف المدرب'); router(); } catch (err) { toast(err.message, 'error'); }
+  }));
+}
+
+route('/a', { role: 'admin' }, async (ctx) => {
+  const main = startPage('admin', 'dashboard');
+  const d = await api('/a/overview');
+  if (ctx.stale()) return;
+  const c = d.counts;
+  main.innerHTML = pageHead(`أهلًا، ${esc(state.me.name)}`, 'ملخص المنصة، ومن هنا تضيف المدربين وتديرهم.', `<button class="btn btn-primary" data-new>${icon('plus')} إضافة مدرب</button>`)
+    + `<div class="stats">
+      ${stat('users', 'المدربون', c.trainers, '/a/trainers')}
+      ${stat('book', 'المتدربون', c.trainees, '/a/trainees', 'info')}
+      ${stat('video', 'الدورات', c.courses, '/a/trainers')}
+      ${stat('exam', 'الاختبارات', c.exams, '/a/trainers', 'accent')}
+    </div>
+    <section class="section" style="margin-top:0"><div class="section-head"><h2>المدربون</h2><a class="link" href="#/a/trainers">إدارة المدربين</a></div>
+      ${d.trainers.length ? adminTrainerTable(d.trainers) : empty('users', 'لا يوجد مدربون بعد', 'أضف أول مدرب ليبدأ بإنشاء الدورات ورفع المحتوى.', `<button class="btn btn-primary" data-new>${icon('plus')} إضافة أول مدرب</button>`)}
+    </section>`;
+  $$('[data-new]', main).forEach((b) => b.addEventListener('click', trainerModal));
+  bindTrainerActions(main, d.trainers);
+});
+
+route('/a/trainers', { role: 'admin' }, async (ctx) => {
+  const main = startPage('admin', 'trainers');
+  const d = await api('/a/overview');
+  if (ctx.stale()) return;
+  main.innerHTML = pageHead('المدربون', 'أضف مدربين، وغيّر كلمات مرورهم، أو احذفهم.', d.trainers.length ? `<button class="btn btn-primary" data-new>${icon('plus')} إضافة مدرب</button>` : '')
+    + (d.trainers.length ? adminTrainerTable(d.trainers) : empty('users', 'لا يوجد مدربون بعد', 'أضف أول مدرب ليبدأ بإنشاء الدورات ورفع المحتوى.', `<button class="btn btn-primary" data-new>${icon('plus')} إضافة أول مدرب</button>`));
+  $$('[data-new]', main).forEach((b) => b.addEventListener('click', trainerModal));
+  bindTrainerActions(main, d.trainers);
+});
+
+route('/a/trainees', { role: 'admin' }, async (ctx) => {
+  const main = startPage('admin', 'trainees');
+  const d = await api('/a/trainees');
+  if (ctx.stale()) return;
+  main.innerHTML = pageHead('المتدربون', `${d.trainees.length} متدرب مسجّل في المنصة`)
+    + (d.trainees.length
+      ? `<div class="table-wrap"><table class="table">
+          <thead><tr><th>المتدرب</th><th>تاريخ التسجيل</th><th>الدورات الملتحق بها</th><th></th></tr></thead>
+          <tbody>${d.trainees.map((t) => `<tr>
+            <td data-label="المتدرب"><b>${esc(t.name)}</b><small class="muted d-block" dir="ltr" style="text-align:right">${esc(t.email)}</small></td>
+            <td data-label="تاريخ التسجيل">${new Intl.DateTimeFormat(LOCALE, { day: 'numeric', month: 'long', year: 'numeric' }).format(new Date(t.createdAt))}</td>
+            <td data-label="الدورات">${t.courses.length ? t.courses.map((c) => `<span class="score pending">${esc(c)}</span>`).join('') : '<span class="muted">لم يلتحق بعد</span>'}</td>
+            <td><button class="icon-btn danger" data-del="${t.id}" title="حذف" aria-label="حذف">${icon('trash')}</button></td>
+          </tr>`).join('')}</tbody></table></div>`
+      : empty('book', 'لا يوجد متدربون بعد', 'سيظهر هنا كل من يسجّل حسابًا في المنصة.'));
+  $$('[data-del]', main).forEach((b) => b.addEventListener('click', async () => {
+    const t = d.trainees.find((x) => x.id === b.dataset.del);
+    if (!(await confirmBox(`حذف حساب المتدرب «${t.name}» مع تقدّمه ونتائجه؟ لا يمكن التراجع عن ذلك.`, { title: 'حذف المتدرب', ok: 'حذف' }))) return;
+    try { await api(`/a/trainees/${t.id}`, 'DELETE'); toast('تم حذف المتدرب'); router(); } catch (err) { toast(err.message, 'error'); }
+  }));
 });
 
 /* ---------- boot ---------- */

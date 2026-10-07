@@ -47,6 +47,13 @@ final class Api {
         s.route("POST", "/api/auth/logout", null, this::logout);
         s.route("GET", "/api/me", null, this::me);
 
+        s.route("GET", "/api/a/overview", "admin", this::adminOverview);
+        s.route("POST", "/api/a/trainers", "admin", this::createTrainer);
+        s.route("PUT", "/api/a/trainers/{id}/password", "admin", this::resetTrainerPassword);
+        s.route("DELETE", "/api/a/trainers/{id}", "admin", this::deleteTrainer);
+        s.route("GET", "/api/a/trainees", "admin", this::adminTrainees);
+        s.route("DELETE", "/api/a/trainees/{id}", "admin", this::deleteTrainee);
+
         s.route("GET", "/api/t/dashboard", "trainer", this::trainerDashboard);
         s.route("GET", "/api/t/courses", "trainer", this::trainerCourses);
         s.route("POST", "/api/t/courses", "trainer", this::createCourse);
@@ -185,10 +192,22 @@ final class Api {
 
     // ================================================================ accounts
 
-    void seedTrainer(String email, String password) {
-        for (Map<String, Object> u : db.table("users")) if ("trainer".equals(u.get("role"))) return;
-        createUser("المدرب", email.toLowerCase(Locale.ROOT), password, "trainer");
-        System.out.println("Created the trainer account: " + email);
+    /**
+     * Makes sure there is an admin. The account named by the env email is promoted if it exists
+     * (older installs created it as a trainer), otherwise it is created.
+     */
+    void seedAdmin(String email, String password) {
+        for (Map<String, Object> u : db.table("users")) if ("admin".equals(u.get("role"))) return;
+        Map<String, Object> existing = userByEmail(email);
+        if (existing != null) {
+            existing.put("role", "admin");
+            if ("المدرب".equals(existing.get("name"))) existing.put("name", "المدير");
+            db.touch();
+            System.out.println("Promoted to admin: " + email);
+            return;
+        }
+        createUser("المدير", email.toLowerCase(Locale.ROOT), password, "admin");
+        System.out.println("Created the admin account: " + email);
     }
 
     private Map<String, Object> createUser(String name, String email, String password, String role) {
@@ -225,10 +244,11 @@ final class Api {
         if (user == null || !checkPassword(user, r.raw("password"))) {
             throw new ApiError(401, "البريد الإلكتروني أو كلمة المرور غير صحيحة");
         }
-        boolean trainerPortal = "trainer".equals(r.str("role"));
-        boolean isTrainer = "trainer".equals(user.get("role"));
-        if (trainerPortal && !isTrainer) throw new ApiError(403, "هذا الحساب ليس حساب مدرب، ادخل من صفحة دخول المتدربين");
-        if (!trainerPortal && isTrainer) throw new ApiError(403, "هذا حساب مدرب، ادخل من بوابة المدربين");
+        // The staff portal serves trainers and the admin; the trainee page serves trainees only.
+        boolean staffPortal = "trainer".equals(r.str("role"));
+        boolean isStaff = "trainer".equals(user.get("role")) || "admin".equals(user.get("role"));
+        if (staffPortal && !isStaff) throw new ApiError(403, "هذا الحساب ليس حساب مدرب، ادخل من صفحة دخول المتدربين");
+        if (!staffPortal && isStaff) throw new ApiError(403, "هذا حساب مدرب أو إدارة، ادخل من بوابة المدربين");
         startSession(r, user);
         return obj("user", publicUser(user));
     }
@@ -563,7 +583,12 @@ final class Api {
     }
 
     private Object deleteCourse(Req r) {
-        Map<String, Object> c = ownCourse(r, r.param(0));
+        removeCourse(ownCourse(r, r.param(0)));
+        return null;
+    }
+
+    /** Deletes a course with its videos, live sessions, exams, enrollments and progress. */
+    private void removeCourse(Map<String, Object> c) {
         final String id = s(c, "id");
         for (Map<String, Object> v : videosOf(id)) deleteFile(s(v, "file"));
         final Set<String> examIds = new HashSet<>();
@@ -577,7 +602,6 @@ final class Api {
         for (Map<String, Object> bank : db.table("banks")) if (id.equals(bank.get("courseId"))) bank.put("courseId", "");
         deleteFile(s(c, "cover"));
         db.removeIf("courses", x -> id.equals(x.get("id")));
-        return null;
     }
 
     private Object uploadCover(Req r) {
@@ -1313,5 +1337,106 @@ final class Api {
         long answer = r.lng("answer", -1);
         if (answer < 0 || answer >= list(q, "options").size()) throw bad("اختر إجابة أولًا");
         return obj("isCorrect", answer == n(q, "correct"), "correct", n(q, "correct"), "explanation", s(q, "explanation"));
+    }
+
+    // ============================================================ admin side
+
+    private List<Map<String, Object>> usersWithRole(String role) {
+        List<Map<String, Object>> users = db.where("users", u -> role.equals(u.get("role")));
+        users.sort(byNum("createdAt").reversed());
+        return users;
+    }
+
+    private Map<String, Object> trainerRow(Map<String, Object> t) {
+        final String id = s(t, "id");
+        final Set<String> courseIds = new HashSet<>();
+        for (Map<String, Object> c : db.where("courses", c -> id.equals(c.get("trainerId")))) courseIds.add(s(c, "id"));
+        Set<String> trainees = new HashSet<>();
+        for (Map<String, Object> e : db.table("enrollments")) if (courseIds.contains(s(e, "courseId"))) trainees.add(s(e, "userId"));
+        return obj("id", id, "name", t.get("name"), "email", t.get("email"), "createdAt", t.get("createdAt"),
+                "courses", courseIds.size(), "trainees", trainees.size(),
+                "banks", db.count("banks", b -> id.equals(b.get("trainerId"))));
+    }
+
+    private Object adminOverview(Req r) {
+        List<Map<String, Object>> trainers = new ArrayList<>();
+        for (Map<String, Object> t : usersWithRole("trainer")) trainers.add(trainerRow(t));
+        return obj("counts", obj(
+                        "trainers", trainers.size(),
+                        "trainees", usersWithRole("trainee").size(),
+                        "courses", db.table("courses").size(),
+                        "exams", db.table("exams").size()),
+                "trainers", trainers);
+    }
+
+    private Object createTrainer(Req r) {
+        String name = text(r.str("name"), 80, "أدخل اسم المدرب");
+        if (name.length() < 2) throw bad("الاسم قصير جدًا");
+        String email = r.str("email").toLowerCase(Locale.ROOT);
+        if (email.length() > 120 || !EMAIL.matcher(email).matches()) throw bad("البريد الإلكتروني غير صالح");
+        String password = r.raw("password");
+        if (password.length() < 6) throw bad("كلمة المرور يجب ألا تقل عن 6 أحرف");
+        if (userByEmail(email) != null) throw new ApiError(409, "هذا البريد مستخدم لحساب آخر");
+        return obj("trainer", trainerRow(createUser(name, email, password, "trainer")));
+    }
+
+    private Map<String, Object> userWithRole(String id, String role, String missing) {
+        Map<String, Object> u = db.find("users", id);
+        if (u == null || !role.equals(u.get("role"))) throw notFound(missing);
+        return u;
+    }
+
+    private Object resetTrainerPassword(Req r) {
+        Map<String, Object> t = userWithRole(r.param(0), "trainer", "المدرب غير موجود");
+        String password = r.raw("password");
+        if (password.length() < 6) throw bad("كلمة المرور يجب ألا تقل عن 6 أحرف");
+        String salt = newSalt();
+        t.put("salt", salt);
+        t.put("passwordHash", hash(password, salt));
+        final String id = s(t, "id");
+        db.removeIf("sessions", x -> id.equals(x.get("userId")));
+        db.touch();
+        return obj("ok", true);
+    }
+
+    /** Removes a trainer together with their courses, question banks and exams. */
+    private Object deleteTrainer(Req r) {
+        Map<String, Object> t = userWithRole(r.param(0), "trainer", "المدرب غير موجود");
+        final String id = s(t, "id");
+        for (Map<String, Object> c : db.where("courses", c -> id.equals(c.get("trainerId")))) removeCourse(c);
+        final Set<String> bankIds = new HashSet<>();
+        for (Map<String, Object> b : db.where("banks", b -> id.equals(b.get("trainerId")))) bankIds.add(s(b, "id"));
+        db.removeIf("questions", q -> bankIds.contains(s(q, "bankId")));
+        db.removeIf("banks", b -> id.equals(b.get("trainerId")));
+        db.removeIf("exams", e -> id.equals(e.get("trainerId")));
+        db.removeIf("lives", l -> id.equals(l.get("trainerId")));
+        db.removeIf("sessions", x -> id.equals(x.get("userId")));
+        db.removeIf("users", u -> id.equals(u.get("id")));
+        return null;
+    }
+
+    private Object adminTrainees(Req r) {
+        List<Map<String, Object>> out = new ArrayList<>();
+        for (Map<String, Object> u : usersWithRole("trainee")) {
+            final String id = s(u, "id");
+            List<Object> courses = new ArrayList<>();
+            for (Map<String, Object> e : db.where("enrollments", e -> id.equals(e.get("userId")))) {
+                String title = courseTitle(s(e, "courseId"));
+                if (!title.isEmpty()) courses.add(title);
+            }
+            out.add(obj("id", id, "name", u.get("name"), "email", u.get("email"), "createdAt", u.get("createdAt"), "courses", courses));
+        }
+        return obj("trainees", out);
+    }
+
+    private Object deleteTrainee(Req r) {
+        final String id = s(userWithRole(r.param(0), "trainee", "المتدرب غير موجود"), "id");
+        db.removeIf("enrollments", x -> id.equals(x.get("userId")));
+        db.removeIf("watches", x -> id.equals(x.get("userId")));
+        db.removeIf("attempts", x -> id.equals(x.get("userId")));
+        db.removeIf("sessions", x -> id.equals(x.get("userId")));
+        for (Map<String, Object> b : db.table("banks")) list(b, "traineeIds").removeIf(x -> id.equals(String.valueOf(x)));
+        db.removeIf("users", u -> id.equals(u.get("id")));
+        return null;
     }
 }
