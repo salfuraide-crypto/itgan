@@ -1,0 +1,11 @@
+# Render free web service (https://render.com). Data on the free plan resets when the service restarts.
+services:
+  - type: web
+    name: itqan
+    runtime: docker
+    plan: free
+    envVars:
+      - key: ITQAN_TRAINER_EMAIL
+        sync: false
+      - key: ITQAN_TRAINER_PASSWORD
+        sync: false
