@@ -28,6 +28,32 @@
   --sidebar: 256px;
 }
 
+/* Dark mode — switched from the Settings page (html[data-theme="dark"]) */
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #0f1418;
+  --surface: #182026;
+  --surface-2: #212b32;
+  --text: #e6ecef;
+  --muted: #a3afb8;
+  --faint: #7d8993;
+  --border: #2c3840;
+  --primary: #2dd4bf;
+  --primary-strong: #5eead4;
+  --primary-soft: #133a37;
+  --accent-soft: #3a2a12;
+  --danger-soft: #3d1c17;
+  --success-soft: #16301f;
+  --live-soft: #3b1621;
+  --info-soft: #182847;
+  --shadow: 0 1px 2px rgba(0, 0, 0, .3), 0 4px 16px rgba(0, 0, 0, .25);
+  --shadow-lg: 0 12px 40px rgba(0, 0, 0, .5);
+}
+:root[data-theme="dark"] .btn-primary,
+:root[data-theme="dark"] .logo { color: #0f1418; }
+:root[data-theme="dark"] .q-exp.open { color: #c7d7fb; }
+:root[data-theme="dark"] .pool-q:hover { background: var(--surface-2); }
+
 * { box-sizing: border-box; }
 html { -webkit-text-size-adjust: 100%; }
 body {

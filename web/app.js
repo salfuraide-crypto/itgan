@@ -286,11 +286,13 @@ const TRAINER_NAV = [
   ['banks', '/t/banks', 'bank', 'بنوك الأسئلة'],
   ['exams', '/t/exams', 'exam', 'الاختبارات'],
   ['trainees', '/t/trainees', 'users', 'المتدربون والنتائج'],
+  ['settings' , '/t/settings', 'home', 'الإعدادات']
 ];
 const ADMIN_NAV = [
   ['dashboard', '/a', 'home', 'الرئيسية'],
   ['trainers', '/a/trainers', 'users', 'المدربون'],
   ['trainees', '/a/trainees', 'book', 'المتدربون'],
+    ['settings' , '/a/settings', 'home', 'الإعدادات']
 ];
 const TRAINEE_NAV = [
   ['courses', '/s', 'book', 'دوراتي'],
@@ -299,6 +301,7 @@ const TRAINEE_NAV = [
   ['exams', '/s/exams', 'exam', 'الاختبارات'],
   ['banks', '/s/banks', 'bank', 'بنك الأسئلة'],
   ['progress', '/s/progress', 'chart', 'تقدّمي'],
+  ['settings' , '/s/settings', 'home', 'الإعدادات']
 ];
 
 function publicShell() {
@@ -1743,9 +1746,47 @@ route('/a/trainees', { role: 'admin' }, async (ctx) => {
     try { await api(`/a/trainees/${t.id}`, 'DELETE'); toast('تم حذف المتدرب'); router(); } catch (err) { toast(err.message, 'error'); }
   }));
 });
+/* ---------- settings: dark / light mode ---------- */
+function getTheme() {
+  try { return localStorage.getItem('itqan-theme') === 'dark' ? 'dark' : 'light'; } catch (e) { return 'light'; }
+}
+function applyTheme(theme) {
+  document.documentElement.dataset.theme = theme;
+  try { localStorage.setItem('itqan-theme', theme); } catch (e) { /* ignore */ }
+}
 
+function renderSettings(main) {
+  const theme = getTheme();
+  main.innerHTML = pageHead('الإعدادات', 'خصّص شكل المنصة كما تحب')
+    + `<div class="card">
+        <h3>مظهر الصفحة</h3>
+        <p class="muted" style="margin:4px 0 14px">اختر الوضع الفاتح أو الداكن.</p>
+        <div class="seg">
+          <label><input type="radio" name="theme" value="light" ${theme === 'light' ? 'checked' : ''}><span>☀️ فاتح</span></label>
+          <label><input type="radio" name="theme" value="dark" ${theme === 'dark' ? 'checked' : ''}><span>🌙 داكن</span></label>
+        </div>
+      </div>`;
+  $$('input[name="theme"]', main).forEach((input) => input.addEventListener('change', () => {
+    applyTheme(input.value);
+    toast(input.value === 'dark' ? 'تم تفعيل الوضع الداكن' : 'تم تفعيل الوضع الفاتح');
+  }));
+}
+
+route('/a/settings', { role: 'admin' }, async (ctx) => {
+  const main = startPage('admin', 'settings');
+  renderSettings(main);
+});
+route('/t/settings', { role: 'trainer' }, async (ctx) => {
+  const main = startPage('trainer', 'settings');
+  renderSettings(main);
+});
+route('/s/settings', { role: 'trainee' }, async (ctx) => {
+  const main = startPage('trainee', 'settings');
+  renderSettings(main);
+});
 /* ---------- boot ---------- */
 (async function init() {
+  applyTheme(getTheme());
   try {
     state.me = (await api('/me')).user;
   } catch (e) {
