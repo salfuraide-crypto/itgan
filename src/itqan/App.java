@@ -22,7 +22,12 @@ public final class App {
         Path uploads = dataDir.resolve("uploads");
         Files.createDirectories(uploads);
 
-        Store store = new Store(dataDir.resolve("itqan.json"));
+        // DATABASE_URL (e.g. a free Neon/Supabase PostgreSQL) keeps data when the host's disk is temporary.
+        String databaseUrl = env("DATABASE_URL", "");
+        Backend backend = databaseUrl.isEmpty()
+                ? new Backend.FileBackend(dataDir.resolve("itqan.json"))
+                : new Backend.PostgresBackend(databaseUrl);
+        Store store = new Store(backend);
         Api api = new Api(store, uploads);
         synchronized (store) {
             api.seedTrainer(env("ITQAN_TRAINER_EMAIL", "trainer@itqan.test"), env("ITQAN_TRAINER_PASSWORD", "itqan123"));
@@ -53,7 +58,8 @@ public final class App {
         String url = "http://localhost:" + port + "/";
         System.out.println("Itqan is running at " + url);
         System.out.println("Trainer portal:     " + url + "#/trainer/login");
-        System.out.println("Data folder:        " + dataDir.toAbsolutePath());
+        System.out.println("Data stored in:     " + backend.describe());
+        System.out.println("Uploaded files in:  " + uploads.toAbsolutePath());
         if (!"0".equals(System.getenv("ITQAN_OPEN_BROWSER"))) openBrowser(url);
     }
 

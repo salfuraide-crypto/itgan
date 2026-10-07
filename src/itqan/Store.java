@@ -2,11 +2,6 @@ package itqan;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.AtomicMoveNotSupportedException;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.nio.file.StandardCopyOption;
 import java.security.SecureRandom;
 import java.util.ArrayList;
 import java.util.Iterator;
@@ -16,22 +11,23 @@ import java.util.Map;
 import java.util.function.Predicate;
 
 /**
- * In-memory tables of JSON rows, persisted to a single JSON file.
+ * In-memory tables of JSON rows, persisted as one JSON snapshot through a {@link Backend}.
  * Not thread-safe by itself: callers synchronize on the store instance.
  */
 public final class Store {
     private static final SecureRandom RANDOM = new SecureRandom();
     private static final char[] ID_CHARS = "abcdefghijklmnopqrstuvwxyz0123456789".toCharArray();
 
-    private final Path file;
+    private final Backend backend;
     private final Map<String, List<Map<String, Object>>> tables = new LinkedHashMap<>();
     private boolean dirty;
 
     @SuppressWarnings("unchecked")
-    public Store(Path file) throws IOException {
-        this.file = file;
-        if (!Files.exists(file)) return;
-        Object root = Json.parse(new String(Files.readAllBytes(file), StandardCharsets.UTF_8));
+    public Store(Backend backend) throws IOException {
+        this.backend = backend;
+        String saved = backend.load();
+        if (saved == null || saved.trim().isEmpty()) return;
+        Object root = Json.parse(saved);
         if (!(root instanceof Map)) return;
         for (Map.Entry<?, ?> e : ((Map<?, ?>) root).entrySet()) {
             List<Map<String, Object>> rows = new ArrayList<>();
@@ -101,14 +97,7 @@ public final class Store {
     public void flush() {
         if (!dirty) return;
         try {
-            Files.createDirectories(file.getParent());
-            Path tmp = file.resolveSibling(file.getFileName() + ".tmp");
-            Files.write(tmp, Json.stringify(tables).getBytes(StandardCharsets.UTF_8));
-            try {
-                Files.move(tmp, file, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
-            } catch (AtomicMoveNotSupportedException e) {
-                Files.move(tmp, file, StandardCopyOption.REPLACE_EXISTING);
-            }
+            backend.save(Json.stringify(tables));
             dirty = false;
         } catch (IOException e) {
             throw new UncheckedIOException(e);
