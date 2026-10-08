@@ -55,7 +55,9 @@
 :root[data-theme="dark"] .pool-q:hover { background: var(--surface-2); }
 
 * { box-sizing: border-box; }
-html { -webkit-text-size-adjust: 100%; }
+html { -webkit-text-size-adjust: 100%; overflow-x: hidden; }
+/* The phone menu waits just past the screen edge; clip so it can never widen the page (iOS Safari zooms out otherwise). */
+@supports (overflow-x: clip) { html { overflow-x: clip; } }
 body {
   margin: 0; background: var(--bg); color: var(--text);
   font-family: var(--font); font-size: 15px; line-height: 1.65;
@@ -268,6 +270,9 @@ input[type=datetime-local], input[type=url], input[type=email] { direction: ltr;
 .s-nav .ic { width: 18px; height: 18px; }
 .s-user { display: flex; align-items: center; gap: 8px; }
 .s-user .avatar { width: 34px; height: 34px; border-radius: 10px; }
+/* On phones the settings shortcut sits in the top bar; on wide screens it is already in the main menu. */
+.s-settings { display: none; }
+.s-settings.active { color: var(--primary); background: var(--primary-soft); }
 .s-name { font-weight: 600; font-size: .9rem; max-width: 16ch; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .tabbar { display: none; }
 
@@ -282,6 +287,8 @@ input[type=datetime-local], input[type=url], input[type=email] { direction: ltr;
 .stat.accent .stat-ic { background: var(--accent-soft); color: var(--accent); }
 .stat.info .stat-ic { background: var(--info-soft); color: var(--info); }
 .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; align-items: start; }
+/* Grid cells may shrink below their content (long titles then wrap or end in "…") instead of widening the page. */
+.two-col > *, .player-layout > *, .grid-2 > *, .course-hero > *, .stats > *, .features > *, .exam-form .grid-3 > * { min-width: 0; }
 
 /* ===== Courses ===== */
 .course-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 18px; }
@@ -521,8 +528,8 @@ fieldset.q-card legend { display: flex; gap: 12px; font-weight: 600; padding: 0;
   .stats { grid-template-columns: repeat(3, 1fr); }
 }
 @media (max-width: 960px) {
-  .sidebar { transform: translateX(100%); box-shadow: var(--shadow-lg); }
-  .t-shell.side-open .sidebar { transform: none; }
+  .sidebar { transform: translateX(100%); box-shadow: var(--shadow-lg); visibility: hidden; transition: transform .25s, visibility 0s .25s; }
+  .t-shell.side-open .sidebar { transform: none; visibility: visible; transition: transform .25s; }
   .t-shell.side-open .side-backdrop { display: block; position: fixed; inset: 0; background: rgba(15,23,30,.4); z-index: 35; }
   .t-main { margin-inline-start: 0; }
   .topbar { display: flex; align-items: center; gap: 8px; padding: 10px 16px; background: var(--surface); border-bottom: 1px solid var(--border); position: sticky; top: 0; z-index: 30; }
@@ -539,18 +546,19 @@ fieldset.q-card legend { display: flex; gap: 12px; font-weight: 600; padding: 0;
   .content { padding: 20px 16px 48px; }
   .s-head-in { padding: 10px 16px; }
   .s-nav, .s-name { display: none; }
+  .s-settings { display: inline-grid; }
   .s-head-in .brand { flex: 1; }
   .s-content { padding-bottom: calc(96px + env(safe-area-inset-bottom)); }
   .tabbar {
-    display: grid; grid-template-columns: repeat(6, 1fr); position: fixed; bottom: 0; left: 0; right: 0; z-index: 30;
+    display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); position: fixed; bottom: 0; left: 0; right: 0; z-index: 30;
     background: var(--surface); border-top: 1px solid var(--border); padding: 6px 4px calc(6px + env(safe-area-inset-bottom));
   }
-  .tabbar a { display: flex; flex-direction: column; align-items: center; gap: 2px; font-size: .72rem; font-weight: 600; color: var(--faint); padding: 4px 0; border-radius: 10px; }
+  .tabbar a { display: flex; flex-direction: column; align-items: center; gap: 2px; font-size: .72rem; font-weight: 600; color: var(--faint); padding: 4px 0; border-radius: 10px; text-align: center; line-height: 1.25; min-width: 0; }
   .tabbar a .ic { width: 22px; height: 22px; }
   .tabbar a.active { color: var(--primary); }
   .s-shell .exam-bar { top: 58px; }
   .stats { grid-template-columns: repeat(2, 1fr); }
-  .stats .stat:last-child { grid-column: 1 / -1; }
+  .stats .stat:last-child:nth-child(odd) { grid-column: 1 / -1; }
   .features { grid-template-columns: 1fr; }
   .course-hero { grid-template-columns: 1fr; }
   .grid-2, .exam-form .grid-3 { grid-template-columns: 1fr; }

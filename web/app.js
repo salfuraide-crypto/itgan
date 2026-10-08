@@ -52,7 +52,8 @@ const pctClass = (p) => (p >= 70 ? '' : p >= 50 ? 'mid' : 'low');
 
 /* ---------- icons ---------- */
 const ICONS = {
-  home: '<path d="M3 10.5 12 3l9 7.5"/><path d="M5 9.5V21h14V9.5"/><path d="M10 21v-6h4v6"/>',
+  settings: '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/>',
+  home:'<path d="M3 10.5 12 3l9 7.5"/><path d="M5 9.5V21h14V9.5"/><path d="M10 21v-6h4v6"/>',
   book: '<path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H20v15H6.5A2.5 2.5 0 0 0 4 20.5z"/><path d="M4 20.5A2.5 2.5 0 0 0 6.5 23H20v-5"/>',
   video: '<rect x="2" y="5" width="14" height="14" rx="2.5"/><path d="m16 10 6-3.5v11L16 14"/>',
   live: '<circle cx="12" cy="12" r="2"/><path d="M8.5 8.5a5 5 0 0 0 0 7M15.5 8.5a5 5 0 0 1 0 7M5.6 5.6a9 9 0 0 0 0 12.8M18.4 5.6a9 9 0 0 1 0 12.8"/>',
@@ -286,13 +287,13 @@ const TRAINER_NAV = [
   ['banks', '/t/banks', 'bank', 'بنوك الأسئلة'],
   ['exams', '/t/exams', 'exam', 'الاختبارات'],
   ['trainees', '/t/trainees', 'users', 'المتدربون والنتائج'],
-  ['settings' , '/t/settings', 'home', 'الإعدادات']
+  ['settings' , '/t/settings', 'settings', 'الإعدادات']
 ];
 const ADMIN_NAV = [
   ['dashboard', '/a', 'home', 'الرئيسية'],
   ['trainers', '/a/trainers', 'users', 'المدربون'],
   ['trainees', '/a/trainees', 'book', 'المتدربون'],
-    ['settings' , '/a/settings', 'home', 'الإعدادات']
+    ['settings' , '/a/settings', 'settings', 'الإعدادات']
 ];
 const TRAINEE_NAV = [
   ['courses', '/s', 'book', 'دوراتي'],
@@ -301,7 +302,7 @@ const TRAINEE_NAV = [
   ['exams', '/s/exams', 'exam', 'الاختبارات'],
   ['banks', '/s/banks', 'bank', 'بنك الأسئلة'],
   ['progress', '/s/progress', 'chart', 'تقدّمي'],
-  ['settings' , '/s/settings', 'home', 'الإعدادات']
+  ['settings' , '/s/settings', 'settings', 'الإعدادات']
 ];
 
 function publicShell() {
@@ -341,10 +342,11 @@ function traineeShell() {
       <a class="brand" href="#/s">${logo()}<span>إتقان</span></a>
       <nav class="s-nav">${TRAINEE_NAV.map(([k, href, ic, label]) => `<a href="#${href}" data-nav="${k}">${icon(ic)}${label}</a>`).join('')}</nav>
       <div class="s-user"><span class="avatar">${esc(initial(me.name))}</span><span class="s-name">${esc(me.name)}</span>
+        <a class="icon-btn s-settings" href="#/s/settings" data-nav="settings" title="الإعدادات" aria-label="الإعدادات">${icon('settings')}</a>
         <button class="icon-btn" data-logout title="تسجيل الخروج" aria-label="تسجيل الخروج">${icon('logout')}</button></div>
     </div></header>
     <main id="main" class="content s-content"></main>
-    <nav class="tabbar">${TRAINEE_NAV.map(([k, href, ic, label]) => `<a href="#${href}" data-nav="${k}">${icon(ic)}<span>${label}</span></a>`).join('')}</nav>
+    <nav class="tabbar">${TRAINEE_NAV.filter(([k]) => k !== 'settings').map(([k, href, ic, label]) => `<a href="#${href}" data-nav="${k}">${icon(ic)}<span>${label}</span></a>`).join('')}</nav>
   </div>`;
 }
 
