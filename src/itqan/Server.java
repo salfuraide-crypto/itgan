@@ -81,12 +81,15 @@ public final class Server implements HttpHandler {
     private final Path webDir;
     private final Path uploadDir;
     private final List<Route> routes = new ArrayList<>();
+    private final R2 r2;
     private MediaGuard mediaGuard = (u, f) -> false;
 
-    public Server(Store store, Path webDir, Path uploadDir) {
+    /** r2 is null when uploads stay on the local disk. */
+    public Server(Store store, Path webDir, Path uploadDir, R2 r2) {
         this.store = store;
         this.webDir = webDir.toAbsolutePath().normalize();
         this.uploadDir = uploadDir.toAbsolutePath().normalize();
+        this.r2 = r2;
     }
 
     /** Registers a JSON endpoint. role: null = public, "any" = signed in, otherwise the required role. */
@@ -161,9 +164,22 @@ public final class Server implements HttpHandler {
             }
         }
 
+        boolean inR2 = false;
         try {
-            if (route.upload) req.upload = receiveUpload(ex, req.q("name"));
-            else if (!method.equals("GET")) req.body = readJsonBody(ex);
+            if (route.upload) {
+                req.upload = receiveUpload(ex, req.q("name"));
+                if (r2 != null && req.upload.size > 0) {
+                    // Sent to R2 before the handler runs, so a saved record never points to a missing file.
+                    try {
+                        r2.put(req.upload.storedName(), req.upload.file, req.upload.mime);
+                        inR2 = true;
+                    } catch (IOException e) {
+                        System.err.println(e.getMessage());
+                        json(ex, 502, error("تعذر حفظ الملف في التخزين، حاول مرة أخرى"));
+                        return;
+                    }
+                }
+            } else if (!method.equals("GET")) req.body = readJsonBody(ex);
 
             String out;
             synchronized (store) {
@@ -185,7 +201,13 @@ public final class Server implements HttpHandler {
         } catch (Exception e) {
             throw new IOException(e);
         } finally {
-            if (req.upload != null && !req.upload.kept) Files.deleteIfExists(req.upload.file);
+            if (req.upload != null) {
+                // With R2 the local copy was only a staging file; without it, the disk copy is the file.
+                if (r2 != null || !req.upload.kept) Files.deleteIfExists(req.upload.file);
+                if (inR2 && !req.upload.kept) {
+                    try { r2.delete(req.upload.storedName()); } catch (IOException e) { System.err.println(e.getMessage()); }
+                }
+            }
         }
     }
 
@@ -237,9 +259,18 @@ public final class Server implements HttpHandler {
             Map<String, Object> user = sessionUser(cookie(ex, COOKIE));
             allowed = user != null && mediaGuard.allowed(user, name);
         }
+        if (!allowed) { plain(ex, 404, "Not found"); return; }
         Path file = uploadDir.resolve(name);
-        if (!allowed || !Files.isRegularFile(file)) { plain(ex, 404, "Not found"); return; }
-        sendFile(ex, file, "private, max-age=3600", true);
+        if (Files.isRegularFile(file)) {
+            sendFile(ex, file, "private, max-age=3600", true);
+        } else if (r2 != null) {
+            // The browser fetches the file straight from R2 with a short-lived link (seeking in videos works there too).
+            ex.getResponseHeaders().set("Location", r2.presignedGet(name, 6 * 3600));
+            ex.getResponseHeaders().set("Cache-Control", "private, no-store");
+            ex.sendResponseHeaders(302, -1);
+        } else {
+            plain(ex, 404, "Not found");
+        }
     }
 
     // --------------------------------------------------------------- static

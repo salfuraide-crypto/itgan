@@ -35,10 +35,13 @@ final class Api {
 
     private final Store db;
     private final Path uploadDir;
+    private final R2 r2;
 
-    Api(Store db, Path uploadDir) {
+    /** r2 is null when uploads stay on the local disk. */
+    Api(Store db, Path uploadDir, R2 r2) {
         this.db = db;
         this.uploadDir = uploadDir;
+        this.r2 = r2;
     }
 
     void register(Server s) {
@@ -175,6 +178,7 @@ final class Api {
         if (name == null || name.isEmpty()) return;
         try {
             Files.deleteIfExists(uploadDir.resolve(name));
+            if (r2 != null) r2.delete(name);
         } catch (IOException e) {
             System.err.println("Could not delete " + name + ": " + e.getMessage());
         }

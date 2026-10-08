@@ -28,7 +28,9 @@ public final class App {
                 ? new Backend.FileBackend(dataDir.resolve("itqan.json"))
                 : new Backend.PostgresBackend(databaseUrl);
         Store store = new Store(backend);
-        Api api = new Api(store, uploads);
+        // R2_* settings keep uploaded videos and images in Cloudflare R2 instead of the host's temporary disk.
+        R2 r2 = R2.fromEnv();
+        Api api = new Api(store, uploads, r2);
         synchronized (store) {
             // ITQAN_TRAINER_* are the older names of the same settings and still work.
             api.seedAdmin(env("ITQAN_ADMIN_EMAIL", env("ITQAN_TRAINER_EMAIL", "admin@itqan.test")),
@@ -36,7 +38,7 @@ public final class App {
             store.flush();
         }
 
-        Server server = new Server(store, base.resolve("web"), uploads);
+        Server server = new Server(store, base.resolve("web"), uploads, r2);
         api.register(server);
 
         int port = port(args);
@@ -61,7 +63,7 @@ public final class App {
         System.out.println("Itqan is running at " + url);
         System.out.println("Trainer portal:     " + url + "#/trainer/login");
         System.out.println("Data stored in:     " + backend.describe());
-        System.out.println("Uploaded files in:  " + uploads.toAbsolutePath());
+        System.out.println("Uploaded files in:  " + (r2 != null ? r2.describe() : uploads.toAbsolutePath().toString()));
         if (!"0".equals(System.getenv("ITQAN_OPEN_BROWSER"))) openBrowser(url);
     }
 
