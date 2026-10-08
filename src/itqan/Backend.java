@@ -88,6 +88,27 @@ public interface Backend {
      */
     final class PostgresBackend implements Backend {
         private static final Pattern TABLE_NAME = Pattern.compile("[a-z][a-z0-9_]{0,40}");
+        private static final Pattern FK_NAME = Pattern.compile("foreign key constraint \"(fk_[a-z0-9_]+)\"");
+
+        /** Fields copied out of data into real columns so they can be read and searched easily. */
+        private static final String[][] COLUMNS = {
+                {"users", "name"}, {"users", "email"}, {"users", "role"},
+                {"courses", "title"}, {"exams", "title"}, {"videos", "title"}, {"lives", "title"}, {"banks", "name"},
+        };
+
+        /** Links between tables (table, field, referenced table), enforced by PostgreSQL as foreign keys. */
+        private static final String[][] LINKS = {
+                {"sessions", "userId", "users"},
+                {"courses", "trainerId", "users"},
+                {"videos", "courseId", "courses"},
+                {"lives", "courseId", "courses"}, {"lives", "trainerId", "users"}, {"lives", "recordingVideoId", "videos"},
+                {"banks", "trainerId", "users"}, {"banks", "courseId", "courses"},
+                {"questions", "bankId", "banks"},
+                {"exams", "courseId", "courses"}, {"exams", "trainerId", "users"},
+                {"attempts", "examId", "exams"}, {"attempts", "userId", "users"}, {"attempts", "courseId", "courses"},
+                {"enrollments", "userId", "users"}, {"enrollments", "courseId", "courses"}, {"enrollments", "lastVideoId", "videos"},
+                {"watches", "userId", "users"}, {"watches", "videoId", "videos"}, {"watches", "courseId", "courses"},
+        };
 
         private final String jdbcUrl;
         private final Properties props = new Properties();
@@ -154,6 +175,7 @@ public interface Backend {
                     tables.put(name, rows);
                     saved.put(name, ids);
                 }
+                ensureLinks();
                 return tables;
             } catch (SQLException e) {
                 throw new IOException("Could not read from the database: " + e.getMessage(), e);
@@ -198,6 +220,10 @@ public interface Backend {
                     write(tables);
                     return;
                 } catch (SQLException e) {
+                    if ("23503".equals(e.getSQLState()) && dropBrokenLink(e)) {
+                        attempt--; // the save was refused by a link rule; retry without that rule
+                        continue;
+                    }
                     System.err.println("Database save failed (attempt " + (attempt + 1) + "): " + e.getMessage());
                     connection = null; // reconnect on the next try (e.g. the database went to sleep)
                     if (attempt >= 2) throw new IOException("Could not save to the database: " + e.getMessage(), e);
@@ -208,6 +234,7 @@ public interface Backend {
         /** Writes the rows that were added, changed or removed since the last save, in one transaction. */
         private void write(Map<String, List<Map<String, Object>>> tables) throws SQLException {
             Map<String, Map<String, String>> next = new HashMap<>();
+            boolean newTables = false;
             Connection c = connection();
             c.setAutoCommit(false);
             try {
@@ -220,6 +247,7 @@ public interface Backend {
                     if (before == null) {
                         createTable(c, name);
                         before = new HashMap<>();
+                        newTables = true;
                     }
                     Map<String, String> now = new LinkedHashMap<>();
                     for (Map<String, Object> row : e.getValue()) now.put(rowId(row), Json.stringify(row));
@@ -257,6 +285,88 @@ public interface Backend {
                 try { c.setAutoCommit(true); } catch (SQLException ignored) { /* the connection is being replaced */ }
             }
             for (Map.Entry<String, Map<String, String>> e : next.entrySet()) saved.put(e.getKey(), e.getValue());
+            if (newTables) ensureLinks();
+        }
+
+        /**
+         * Adds the real columns and foreign keys from {@link #COLUMNS} and {@link #LINKS} for the tables that exist.
+         * Each column is generated from data, so it always matches it. A link whose existing rows point to missing
+         * records is left out (and logged) instead of blocking the site; it is tried again on the next start.
+         */
+        private void ensureLinks() {
+            try {
+                Set<String> existing = new HashSet<>(tableNames());
+                Connection c = connection();
+                for (String[] col : COLUMNS) {
+                    if (existing.contains(col[0])) addColumn(c, col[0], col[1]);
+                }
+                for (String[] link : LINKS) {
+                    String table = link[0], field = link[1], target = link[2];
+                    if (!existing.contains(table) || !existing.contains(target)) continue;
+                    String column = addColumn(c, table, field);
+                    String fk = "fk_" + table + "_" + column;
+                    try (Statement st = c.createStatement()) {
+                        st.execute("CREATE INDEX IF NOT EXISTS " + quote("ix_" + table + "_" + column) + " ON " + quote(table) + " (" + column + ")");
+                    }
+                    if (constraintExists(c, fk)) continue;
+                    try (Statement st = c.createStatement()) {
+                        st.execute("ALTER TABLE " + quote(table) + " ADD CONSTRAINT " + quote(fk) + " FOREIGN KEY (" + column
+                                + ") REFERENCES " + quote(target) + " (id) DEFERRABLE INITIALLY DEFERRED NOT VALID");
+                    }
+                    try (Statement st = c.createStatement()) {
+                        st.execute("ALTER TABLE " + quote(table) + " VALIDATE CONSTRAINT " + quote(fk));
+                    } catch (SQLException e) {
+                        try (Statement st = c.createStatement()) {
+                            st.execute("ALTER TABLE " + quote(table) + " DROP CONSTRAINT IF EXISTS " + quote(fk));
+                        }
+                        System.err.println("Not linking " + table + "." + field + " to " + target
+                                + ": some rows point to records that no longer exist.");
+                    }
+                }
+            } catch (SQLException e) {
+                System.err.println("Could not add table links: " + e.getMessage());
+            }
+        }
+
+        /** Adds a text column generated from data->>field (empty text becomes NULL) and returns its name. */
+        private static String addColumn(Connection c, String table, String field) throws SQLException {
+            String column = field.replaceAll("([A-Z])", "_$1").toLowerCase();
+            try (Statement st = c.createStatement()) {
+                st.execute("ALTER TABLE " + quote(table) + " ADD COLUMN IF NOT EXISTS " + column
+                        + " TEXT GENERATED ALWAYS AS (NULLIF(data->>'" + field + "', '')) STORED");
+            }
+            return column;
+        }
+
+        private static boolean constraintExists(Connection c, String name) throws SQLException {
+            try (PreparedStatement ps = c.prepareStatement("SELECT 1 FROM pg_constraint WHERE conname = ?")) {
+                ps.setString(1, name);
+                try (ResultSet rs = ps.executeQuery()) { return rs.next(); }
+            }
+        }
+
+        /** After a save is refused by a foreign key, drops that key so the site keeps saving, and logs it. */
+        private boolean dropBrokenLink(SQLException e) {
+            java.util.regex.Matcher m = FK_NAME.matcher(String.valueOf(e.getMessage()));
+            if (!m.find()) return false;
+            String fk = m.group(1);
+            System.err.println("A save broke the link rule " + fk + "; removing that rule so data keeps saving. " + e.getMessage());
+            try {
+                Connection c = connection();
+                try (PreparedStatement ps = c.prepareStatement(
+                        "SELECT conrelid::regclass::text FROM pg_constraint WHERE conname = ?")) {
+                    ps.setString(1, fk);
+                    try (ResultSet rs = ps.executeQuery()) {
+                        if (!rs.next()) return false;
+                        try (Statement st = c.createStatement()) {
+                            st.execute("ALTER TABLE " + rs.getString(1) + " DROP CONSTRAINT IF EXISTS " + quote(fk));
+                        }
+                    }
+                }
+                return true;
+            } catch (SQLException ignored) {
+                return false;
+            }
         }
 
         private static void createTable(Connection c, String name) throws SQLException {
