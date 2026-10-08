@@ -11,7 +11,7 @@ import java.util.Map;
 import java.util.function.Predicate;
 
 /**
- * In-memory tables of JSON rows, persisted as one JSON snapshot through a {@link Backend}.
+ * In-memory tables of JSON rows, persisted through a {@link Backend} (a JSON file, or PostgreSQL tables).
  * Not thread-safe by itself: callers synchronize on the store instance.
  */
 public final class Store {
@@ -22,20 +22,9 @@ public final class Store {
     private final Map<String, List<Map<String, Object>>> tables = new LinkedHashMap<>();
     private boolean dirty;
 
-    @SuppressWarnings("unchecked")
     public Store(Backend backend) throws IOException {
         this.backend = backend;
-        String saved = backend.load();
-        if (saved == null || saved.trim().isEmpty()) return;
-        Object root = Json.parse(saved);
-        if (!(root instanceof Map)) return;
-        for (Map.Entry<?, ?> e : ((Map<?, ?>) root).entrySet()) {
-            List<Map<String, Object>> rows = new ArrayList<>();
-            if (e.getValue() instanceof List) {
-                for (Object o : (List<?>) e.getValue()) if (o instanceof Map) rows.add((Map<String, Object>) o);
-            }
-            tables.put(String.valueOf(e.getKey()), rows);
-        }
+        tables.putAll(backend.load());
     }
 
     public static String newId(int length) {
@@ -97,7 +86,7 @@ public final class Store {
     public void flush() {
         if (!dirty) return;
         try {
-            backend.save(Json.stringify(tables));
+            backend.save(tables);
             dirty = false;
         } catch (IOException e) {
             throw new UncheckedIOException(e);
