@@ -293,6 +293,8 @@ const ADMIN_NAV = [
   ['dashboard', '/a', 'home', 'الرئيسية'],
   ['trainers', '/a/trainers', 'users', 'المدربون'],
   ['trainees', '/a/trainees', 'book', 'المتدربون'],
+  ['courses', '/a/courses', 'video', 'الدورات'],
+  ['exams', '/a/exams', 'exam', 'الاختبارات'],
     ['settings' , '/a/settings', 'settings', 'الإعدادات']
 ];
 const TRAINEE_NAV = [
@@ -1707,8 +1709,8 @@ route('/a', { role: 'admin' }, async (ctx) => {
     + `<div class="stats">
       ${stat('users', 'المدربون', c.trainers, '/a/trainers')}
       ${stat('book', 'المتدربون', c.trainees, '/a/trainees', 'info')}
-      ${stat('video', 'الدورات', c.courses, '/a/trainers')}
-      ${stat('exam', 'الاختبارات', c.exams, '/a/trainers', 'accent')}
+      ${stat('video', 'الدورات', c.courses, '/a/courses')}
+      ${stat('exam', 'الاختبارات', c.exams, '/a/exams', 'accent')}
     </div>
     <section class="section" style="margin-top:0"><div class="section-head"><h2>المدربون</h2><a class="link" href="#/a/trainers">إدارة المدربين</a></div>
       ${d.trainers.length ? adminTrainerTable(d.trainers) : empty('users', 'لا يوجد مدربون بعد', 'أضف أول مدرب ليبدأ بإنشاء الدورات ورفع المحتوى.', `<button class="btn btn-primary" data-new>${icon('plus')} إضافة أول مدرب</button>`)}
@@ -1747,6 +1749,45 @@ route('/a/trainees', { role: 'admin' }, async (ctx) => {
     if (!(await confirmBox(`حذف حساب المتدرب «${t.name}» مع تقدّمه ونتائجه؟ لا يمكن التراجع عن ذلك.`, { title: 'حذف المتدرب', ok: 'حذف' }))) return;
     try { await api(`/a/trainees/${t.id}`, 'DELETE'); toast('تم حذف المتدرب'); router(); } catch (err) { toast(err.message, 'error'); }
   }));
+});
+
+route('/a/courses', { role: 'admin' }, async (ctx) => {
+  const main = startPage('admin', 'courses');
+  const d = await api('/a/courses');
+  if (ctx.stale()) return;
+  main.innerHTML = pageHead('الدورات', `${d.courses.length} دورة في المنصة`)
+    + (d.courses.length
+      ? `<div class="table-wrap"><table class="table">
+          <thead><tr><th>الدورة</th><th>المدرب</th><th>الفيديوهات</th><th>الاختبارات</th><th>المتدربون</th><th>تاريخ الإنشاء</th></tr></thead>
+          <tbody>${d.courses.map((c) => `<tr>
+            <td data-label="الدورة"><b>${esc(c.title)}</b></td>
+            <td data-label="المدرب">${c.trainerName ? esc(c.trainerName) : '<span class="muted">—</span>'}</td>
+            <td data-label="الفيديوهات">${c.videos}</td>
+            <td data-label="الاختبارات">${c.exams}</td>
+            <td data-label="المتدربون">${c.trainees}</td>
+            <td data-label="تاريخ الإنشاء">${new Intl.DateTimeFormat(LOCALE, { day: 'numeric', month: 'long', year: 'numeric' }).format(new Date(c.createdAt))}</td>
+          </tr>`).join('')}</tbody></table></div>`
+      : empty('video', 'لا توجد دورات بعد', 'ستظهر هنا كل الدورات التي ينشئها المدربون.'));
+});
+
+route('/a/exams', { role: 'admin' }, async (ctx) => {
+  const main = startPage('admin', 'exams');
+  const d = await api('/a/exams');
+  if (ctx.stale()) return;
+  main.innerHTML = pageHead('الاختبارات', `${d.exams.length} اختبار في المنصة`)
+    + (d.exams.length
+      ? `<div class="table-wrap"><table class="table">
+          <thead><tr><th>الاختبار</th><th>الدورة</th><th>المدرب</th><th>الحالة</th><th>الأسئلة</th><th>المدة</th><th>سلّمه</th></tr></thead>
+          <tbody>${d.exams.map((e) => `<tr>
+            <td data-label="الاختبار"><b>${esc(e.title)}</b></td>
+            <td data-label="الدورة">${esc(e.courseTitle)}</td>
+            <td data-label="المدرب">${e.trainerName ? esc(e.trainerName) : '<span class="muted">—</span>'}</td>
+            <td data-label="الحالة"><span class="badge">${e.status === 'published' ? 'منشور' : 'مسودة'}</span></td>
+            <td data-label="الأسئلة">${e.questions}</td>
+            <td data-label="المدة">${e.durationMinutes} دقيقة</td>
+            <td data-label="سلّمه">${e.submitted} متدرب</td>
+          </tr>`).join('')}</tbody></table></div>`
+      : empty('exam', 'لا توجد اختبارات بعد', 'ستظهر هنا كل الاختبارات التي ينشئها المدربون.'));
 });
 /* ---------- settings: dark / light mode ---------- */
 function getTheme() {
