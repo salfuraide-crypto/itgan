@@ -32,10 +32,21 @@ final class Api {
     private static final long ATTEMPT_GRACE_MS = 20_000;
     /** A video counts as watched once roughly this share of it has been played. */
     private static final double WATCHED_RATIO = 0.8;
+    /** Passwords hashed before this setting existed used 60,000 PBKDF2 rounds; they are upgraded on sign-in. */
+    private static final int LEGACY_ROUNDS = 60_000;
+    private static final int HASH_ROUNDS = 210_000;
+    static final int MIN_PASSWORD = 8;
+    /** Wrong passwords allowed for one email within LOGIN_WINDOW_MS before sign-in is paused for that email. */
+    static final int MAX_LOGIN_FAILURES = 5;
+    static final long LOGIN_WINDOW_MS = 15 * 60_000L;
+    /** Hashed when the email is unknown, so a wrong email takes as long as a wrong password. */
+    private static final String DUMMY_SALT = "AAAAAAAAAAAAAAAAAAAAAA==";
 
     private final Store db;
     private final Path uploadDir;
     private final R2 r2;
+    /** Recent wrong passwords per email: {failures, window start, paused until}. Kept in memory only. */
+    private final Map<String, long[]> loginFailures = new java.util.HashMap<>();
 
     /** r2 is null when uploads stay on the local disk. */
     Api(Store db, Path uploadDir, R2 r2) {
@@ -215,9 +226,21 @@ final class Api {
     }
 
     private Map<String, Object> createUser(String name, String email, String password, String role) {
+        Map<String, Object> u = obj("name", name, "email", email, "role", role);
+        setPassword(u, password);
+        return db.insert("users", u);
+    }
+
+    private static void setPassword(Map<String, Object> user, String password) {
         String salt = newSalt();
-        return db.insert("users", obj("name", name, "email", email, "role", role,
-                "salt", salt, "passwordHash", hash(password, salt)));
+        user.put("salt", salt);
+        user.put("passwordHash", hash(password, salt, HASH_ROUNDS));
+        user.put("rounds", (long) HASH_ROUNDS);
+    }
+
+    private static void checkNewPassword(String password) {
+        if (password.length() < MIN_PASSWORD) throw bad("كلمة المرور يجب ألا تقل عن " + MIN_PASSWORD + " أحرف");
+        if (password.length() > 200) throw bad("كلمة المرور طويلة جدًا");
     }
 
     private Map<String, Object> userByEmail(String email) {
@@ -235,8 +258,7 @@ final class Api {
         String email = r.str("email").toLowerCase(Locale.ROOT);
         if (email.length() > 120 || !EMAIL.matcher(email).matches()) throw bad("البريد الإلكتروني غير صالح");
         String password = r.raw("password");
-        if (password.length() < 6) throw bad("كلمة المرور يجب ألا تقل عن 6 أحرف");
-        if (password.length() > 200) throw bad("كلمة المرور طويلة جدًا");
+        checkNewPassword(password);
         if (userByEmail(email) != null) throw new ApiError(409, "هذا البريد مسجّل مسبقًا، جرّب تسجيل الدخول");
         Map<String, Object> user = createUser(name, email, password, "trainee");
         startSession(r, user);
@@ -244,9 +266,23 @@ final class Api {
     }
 
     private Object login(Req r) {
-        Map<String, Object> user = userByEmail(r.str("email"));
+        String key = r.str("email").toLowerCase(Locale.ROOT);
+        long now = now();
+        long[] f = loginFailures.get(key);
+        if (f != null && f[2] > now) {
+            long minutes = Math.max(1, (f[2] - now + 59_999) / 60_000);
+            throw new ApiError(429, "محاولات دخول خاطئة كثيرة لهذا الحساب. حاول مرة أخرى بعد " + minutes + " دقيقة.");
+        }
+        Map<String, Object> user = userByEmail(key);
+        if (user == null) hash(r.raw("password"), DUMMY_SALT, HASH_ROUNDS);
         if (user == null || !checkPassword(user, r.raw("password"))) {
+            recordLoginFailure(key, now);
             throw new ApiError(401, "البريد الإلكتروني أو كلمة المرور غير صحيحة");
+        }
+        loginFailures.remove(key);
+        if (n(user, "rounds") < HASH_ROUNDS) {
+            setPassword(user, r.raw("password"));   // upgrade an older, weaker hash now that we know the password
+            db.touch();
         }
         // The staff portal serves trainers and the admin; the trainee page serves trainees only.
         boolean staffPortal = "trainer".equals(r.str("role"));
@@ -257,16 +293,30 @@ final class Api {
         return obj("user", publicUser(user));
     }
 
+    private void recordLoginFailure(String key, long now) {
+        if (loginFailures.size() > 10_000) loginFailures.values().removeIf(x -> x[2] < now && now - x[1] > LOGIN_WINDOW_MS);
+        long[] f = loginFailures.get(key);
+        if (f == null || now - f[1] > LOGIN_WINDOW_MS) {
+            f = new long[] {0, now, 0};
+            loginFailures.put(key, f);
+        }
+        if (++f[0] >= MAX_LOGIN_FAILURES) {
+            f[0] = 0;
+            f[1] = now;
+            f[2] = now + LOGIN_WINDOW_MS;
+        }
+    }
+
     private void startSession(Req r, Map<String, Object> user) {
         String token = Store.newId(40);
         db.insert("sessions", obj("id", token, "userId", user.get("id")));
-        r.setCookie = Server.COOKIE + "=" + token + "; Path=/; HttpOnly; SameSite=Lax; Max-Age=" + 30L * 24 * 3600;
+        r.setCookie = Server.COOKIE + "=" + token + "; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=" + Server.SESSION_DAYS * 24 * 3600;
     }
 
     private Object logout(Req r) {
         final String token = r.token;
         if (token != null) db.removeIf("sessions", x -> token.equals(x.get("id")));
-        r.setCookie = Server.COOKIE + "=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0";
+        r.setCookie = Server.COOKIE + "=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0";
         return obj("ok", true);
     }
 
@@ -280,9 +330,9 @@ final class Api {
         return Base64.getEncoder().encodeToString(bytes);
     }
 
-    private static String hash(String password, String salt) {
+    static String hash(String password, String salt, int rounds) {
         try {
-            PBEKeySpec spec = new PBEKeySpec(password.toCharArray(), Base64.getDecoder().decode(salt), 60_000, 256);
+            PBEKeySpec spec = new PBEKeySpec(password.toCharArray(), Base64.getDecoder().decode(salt), rounds, 256);
             byte[] key = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256").generateSecret(spec).getEncoded();
             return Base64.getEncoder().encodeToString(key);
         } catch (GeneralSecurityException e) {
@@ -292,7 +342,8 @@ final class Api {
 
     private static boolean checkPassword(Map<String, Object> user, String password) {
         byte[] expected = s(user, "passwordHash").getBytes(StandardCharsets.UTF_8);
-        byte[] actual = hash(password, s(user, "salt")).getBytes(StandardCharsets.UTF_8);
+        long rounds = n(user, "rounds");
+        byte[] actual = hash(password, s(user, "salt"), rounds > 0 ? (int) rounds : LEGACY_ROUNDS).getBytes(StandardCharsets.UTF_8);
         return MessageDigest.isEqual(expected, actual);
     }
 
@@ -1148,8 +1199,14 @@ final class Api {
         if (duration > 0) position = Math.min(position, duration);
         w.put("position", position);
         // Only actually-played seconds count, so jumping to the end does not mark a video as watched.
-        double played = Math.min(30, Math.max(0, r.dbl("played", 0)));
+        // They also cannot exceed the real time since the last report (allowing up to 2.5x playback speed),
+        // so sending many reports quickly does not fake progress.
+        long nowMs = now();
+        long last = n(w, "reportedAt");
+        double allowed = last > 0 ? 2.5 * (nowMs - last) / 1000.0 + 2 : 15;
+        double played = Math.min(Math.min(30, allowed), Math.max(0, r.dbl("played", 0)));
         w.put("played", d(w, "played") + played);
+        w.put("reportedAt", nowMs);
         boolean wasWatched = b(w, "watched");
         if (!wasWatched && duration > 0 && d(w, "played") >= WATCHED_RATIO * duration) w.put("watched", true);
         en.put("lastVideoId", v.get("id"));
@@ -1379,7 +1436,7 @@ final class Api {
         String email = r.str("email").toLowerCase(Locale.ROOT);
         if (email.length() > 120 || !EMAIL.matcher(email).matches()) throw bad("البريد الإلكتروني غير صالح");
         String password = r.raw("password");
-        if (password.length() < 6) throw bad("كلمة المرور يجب ألا تقل عن 6 أحرف");
+        checkNewPassword(password);
         if (userByEmail(email) != null) throw new ApiError(409, "هذا البريد مستخدم لحساب آخر");
         return obj("trainer", trainerRow(createUser(name, email, password, "trainer")));
     }
@@ -1393,10 +1450,9 @@ final class Api {
     private Object resetTrainerPassword(Req r) {
         Map<String, Object> t = userWithRole(r.param(0), "trainer", "المدرب غير موجود");
         String password = r.raw("password");
-        if (password.length() < 6) throw bad("كلمة المرور يجب ألا تقل عن 6 أحرف");
-        String salt = newSalt();
-        t.put("salt", salt);
-        t.put("passwordHash", hash(password, salt));
+        checkNewPassword(password);
+        setPassword(t, password);
+        loginFailures.remove(s(t, "email").toLowerCase(Locale.ROOT));
         final String id = s(t, "id");
         db.removeIf("sessions", x -> id.equals(x.get("userId")));
         db.touch();

@@ -29,6 +29,12 @@ import java.util.regex.Pattern;
 /** HTTP plumbing: JSON API routing, file uploads, protected media streaming and the static web app. */
 public final class Server implements HttpHandler {
     static final String COOKIE = "itqan_session";
+    /** Sessions end after this many days on the server too, not only in the browser. */
+    static final long SESSION_DAYS = 30;
+    private static final String CSP = "default-src 'self'; script-src 'self'; "
+            + "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; "
+            + "img-src 'self' data: blob: https://*.r2.cloudflarestorage.com; media-src 'self' blob: https://*.r2.cloudflarestorage.com; "
+            + "connect-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'";
     private static final int MAX_JSON_BYTES = 2 * 1024 * 1024;
     private static final Pattern MEDIA_NAME = Pattern.compile("[a-z0-9]{8,40}(\\.[a-z0-9]{1,5})?");
     private static final Map<String, String> MIME = new HashMap<>();
@@ -114,6 +120,11 @@ public final class Server implements HttpHandler {
     @Override
     public void handle(HttpExchange ex) {
         try {
+            Headers h = ex.getResponseHeaders();
+            h.set("Strict-Transport-Security", "max-age=31536000");   // browsers use https only
+            h.set("X-Frame-Options", "DENY");                         // no embedding in other sites (clickjacking)
+            h.set("Content-Security-Policy", CSP);                    // only our own scripts and known sources run
+            h.set("Referrer-Policy", "strict-origin-when-cross-origin");
             String path = ex.getRequestURI().getPath();
             if (path.startsWith("/api/")) api(ex, path);
             else if (path.startsWith("/media/")) media(ex, path.substring("/media/".length()));
@@ -214,7 +225,13 @@ public final class Server implements HttpHandler {
     private Map<String, Object> sessionUser(String token) {
         if (token == null || token.isEmpty()) return null;
         Map<String, Object> session = store.find("sessions", token);
-        return session == null ? null : store.find("users", String.valueOf(session.get("userId")));
+        if (session == null) return null;
+        Object created = session.get("createdAt");
+        if (created instanceof Number && System.currentTimeMillis() - ((Number) created).longValue() > SESSION_DAYS * 86_400_000L) {
+            store.removeIf("sessions", s -> token.equals(s.get("id")));
+            return null;
+        }
+        return store.find("users", String.valueOf(session.get("userId")));
     }
 
     private Req.Upload receiveUpload(HttpExchange ex, String originalName) throws IOException {
@@ -265,7 +282,7 @@ public final class Server implements HttpHandler {
             sendFile(ex, file, "private, max-age=3600", true);
         } else if (r2 != null) {
             // The browser fetches the file straight from R2 with a short-lived link (seeking in videos works there too).
-            ex.getResponseHeaders().set("Location", r2.presignedGet(name, 6 * 3600));
+            ex.getResponseHeaders().set("Location", r2.presignedGet(name, 3 * 3600));
             ex.getResponseHeaders().set("Cache-Control", "private, no-store");
             ex.sendResponseHeaders(302, -1);
         } else {
