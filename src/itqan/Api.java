@@ -66,6 +66,8 @@ final class Api {
         s.route("PUT", "/api/a/trainers/{id}/password", "admin", this::resetTrainerPassword);
         s.route("DELETE", "/api/a/trainers/{id}", "admin", this::deleteTrainer);
         s.route("GET", "/api/a/trainees", "admin", this::adminTrainees);
+        s.route("GET", "/api/a/courses", "admin", this::adminCourses);
+        s.route("GET", "/api/a/exams", "admin", this::adminExams);
         s.route("DELETE", "/api/a/trainees/{id}", "admin", this::deleteTrainee);
 
         s.route("GET", "/api/t/dashboard", "trainer", this::trainerDashboard);
@@ -1428,6 +1430,35 @@ final class Api {
                         "courses", db.table("courses").size(),
                         "exams", db.table("exams").size()),
                 "trainers", trainers);
+    }
+
+    /** Every course on the platform with its trainer and how much is in it. */
+    private Object adminCourses(Req r) {
+        List<Map<String, Object>> courses = new ArrayList<>(db.table("courses"));
+        courses.sort(byNum("createdAt").reversed());
+        List<Map<String, Object>> out = new ArrayList<>();
+        for (Map<String, Object> c : courses) {
+            final String id = s(c, "id");
+            out.add(obj("id", id, "title", c.get("title"), "trainerName", userName(s(c, "trainerId")),
+                    "videos", videosOf(id).size(), "exams", examsOf(id, false).size(),
+                    "trainees", db.count("enrollments", e -> id.equals(e.get("courseId"))), "createdAt", c.get("createdAt")));
+        }
+        return obj("courses", out);
+    }
+
+    /** Every exam on the platform with its course, trainer, status and how many trainees submitted it. */
+    private Object adminExams(Req r) {
+        List<Map<String, Object>> exams = new ArrayList<>(db.table("exams"));
+        exams.sort(byNum("createdAt").reversed());
+        List<Map<String, Object>> out = new ArrayList<>();
+        for (Map<String, Object> e : exams) {
+            final String id = s(e, "id");
+            out.add(obj("id", id, "title", e.get("title"), "courseTitle", courseTitle(s(e, "courseId")),
+                    "trainerName", userName(s(e, "trainerId")), "status", e.get("status"),
+                    "questions", existingQuestionIds(e).size(), "durationMinutes", n(e, "durationMinutes"),
+                    "submitted", db.count("attempts", a -> id.equals(a.get("examId")) && submitted(a))));
+        }
+        return obj("exams", out);
     }
 
     private Object createTrainer(Req r) {
