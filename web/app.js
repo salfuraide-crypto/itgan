@@ -440,7 +440,7 @@ route('/register', { guest: true }, async () => authPage({
   sub: 'سجّل حسابك وابدأ التعلّم في دقيقة.',
   fields: field('الاسم', '<input type="text" name="name" autocomplete="name" required>')
     + field('البريد الإلكتروني', '<input type="email" name="email" autocomplete="email" required>')
-    + field('كلمة المرور', '<input type="password" name="password" autocomplete="new-password" minlength="6" required>', '6 أحرف على الأقل'),
+    + field('كلمة المرور', '<input type="password" name="password" autocomplete="new-password" minlength="8" required>', '8 أحرف على الأقل'),
   submit: 'إنشاء الحساب',
   footer: 'لديك حساب؟ <a href="#/login">سجّل الدخول</a>',
   onSubmit: (f) => api('/auth/register', 'POST', { name: f.get('name'), email: f.get('email'), password: f.get('password') }),
@@ -1652,7 +1652,7 @@ function trainerModal() {
     submitText: 'إضافة المدرب',
     body: field('اسم المدرب', '<input type="text" name="name" maxlength="80" required>')
       + field('البريد الإلكتروني', '<input type="email" name="email" maxlength="120" required>')
-      + field('كلمة مرور مؤقتة', '<input type="text" name="password" minlength="6" autocomplete="off" required>', '6 أحرف على الأقل. أرسلها للمدرب ليدخل بها من بوابة المدربين.'),
+      + field('كلمة مرور مؤقتة', '<input type="text" name="password" minlength="8" autocomplete="off" required>', '8 أحرف على الأقل. أرسلها للمدرب ليدخل بها من بوابة المدربين.'),
     async onSubmit(form) {
       await api('/a/trainers', 'POST', { name: form.name.value, email: form.email.value, password: form.password.value });
       toast('تمت إضافة المدرب', 'success');
@@ -1683,7 +1683,7 @@ function bindTrainerActions(root, trainers) {
     modal({
       title: `كلمة مرور جديدة لـ ${t.name}`,
       submitText: 'تغيير كلمة المرور',
-      body: field('كلمة المرور الجديدة', '<input type="text" name="password" minlength="6" autocomplete="off" required>', 'سيُسجَّل خروج المدرب من أجهزته، ويدخل بكلمة المرور الجديدة.'),
+      body: field('كلمة المرور الجديدة', '<input type="text" name="password" minlength="8" autocomplete="off" required>', 'سيُسجَّل خروج المدرب من أجهزته، ويدخل بكلمة المرور الجديدة.'),
       async onSubmit(form) {
         await api(`/a/trainers/${t.id}/password`, 'PUT', { password: form.password.value });
         toast('تم تغيير كلمة المرور', 'success');
