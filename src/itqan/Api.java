@@ -263,6 +263,7 @@ final class Api {
         checkNewPassword(password);
         if (userByEmail(email) != null) throw new ApiError(409, "هذا البريد مسجّل مسبقًا، جرّب تسجيل الدخول");
         Map<String, Object> user = createUser(name, email, password, "trainee");
+        Server.securityLog("account_registered", r.ip, "email=" + email);
         startSession(r, user);
         return obj("user", publicUser(user));
     }
@@ -272,16 +273,20 @@ final class Api {
         long now = now();
         long[] f = loginFailures.get(key);
         if (f != null && f[2] > now) {
+            Server.securityLog("login_while_paused", r.ip, "email=" + key);
             long minutes = Math.max(1, (f[2] - now + 59_999) / 60_000);
             throw new ApiError(429, "محاولات دخول خاطئة كثيرة لهذا الحساب. حاول مرة أخرى بعد " + minutes + " دقيقة.");
         }
         Map<String, Object> user = userByEmail(key);
         if (user == null) hash(r.raw("password"), DUMMY_SALT, HASH_ROUNDS);
         if (user == null || !checkPassword(user, r.raw("password"))) {
-            recordLoginFailure(key, now);
+            boolean paused = recordLoginFailure(key, now);
+            Server.securityLog("login_failed", r.ip, "email=" + key + (user == null ? " (no such account)" : ""));
+            if (paused) Server.securityLog("login_paused_15min", r.ip, "email=" + key);
             throw new ApiError(401, "البريد الإلكتروني أو كلمة المرور غير صحيحة");
         }
         loginFailures.remove(key);
+        Server.securityLog("login_ok", r.ip, "email=" + key + " role=" + user.get("role"));
         if (n(user, "rounds") < HASH_ROUNDS) {
             setPassword(user, r.raw("password"));   // upgrade an older, weaker hash now that we know the password
             db.touch();
@@ -295,7 +300,8 @@ final class Api {
         return obj("user", publicUser(user));
     }
 
-    private void recordLoginFailure(String key, long now) {
+    /** Counts a wrong password; returns true when this one paused sign-in for the email. */
+    private boolean recordLoginFailure(String key, long now) {
         if (loginFailures.size() > 10_000) loginFailures.values().removeIf(x -> x[2] < now && now - x[1] > LOGIN_WINDOW_MS);
         long[] f = loginFailures.get(key);
         if (f == null || now - f[1] > LOGIN_WINDOW_MS) {
@@ -306,7 +312,9 @@ final class Api {
             f[0] = 0;
             f[1] = now;
             f[2] = now + LOGIN_WINDOW_MS;
+            return true;
         }
+        return false;
     }
 
     private void startSession(Req r, Map<String, Object> user) {
@@ -1469,6 +1477,7 @@ final class Api {
         String password = r.raw("password");
         checkNewPassword(password);
         if (userByEmail(email) != null) throw new ApiError(409, "هذا البريد مستخدم لحساب آخر");
+        Server.securityLog("admin_added_trainer", r.ip, "by=" + r.user.get("email") + " trainer=" + email);
         return obj("trainer", trainerRow(createUser(name, email, password, "trainer")));
     }
 
@@ -1484,6 +1493,7 @@ final class Api {
         checkNewPassword(password);
         setPassword(t, password);
         loginFailures.remove(s(t, "email").toLowerCase(Locale.ROOT));
+        Server.securityLog("admin_reset_password", r.ip, "by=" + r.user.get("email") + " trainer=" + t.get("email"));
         final String id = s(t, "id");
         db.removeIf("sessions", x -> id.equals(x.get("userId")));
         db.touch();
@@ -1494,6 +1504,7 @@ final class Api {
     private Object deleteTrainer(Req r) {
         Map<String, Object> t = userWithRole(r.param(0), "trainer", "المدرب غير موجود");
         final String id = s(t, "id");
+        Server.securityLog("admin_deleted_trainer", r.ip, "by=" + r.user.get("email") + " trainer=" + t.get("email"));
         for (Map<String, Object> c : db.where("courses", c -> id.equals(c.get("trainerId")))) removeCourse(c);
         final Set<String> bankIds = new HashSet<>();
         for (Map<String, Object> b : db.where("banks", b -> id.equals(b.get("trainerId")))) bankIds.add(s(b, "id"));
@@ -1521,7 +1532,9 @@ final class Api {
     }
 
     private Object deleteTrainee(Req r) {
-        final String id = s(userWithRole(r.param(0), "trainee", "المتدرب غير موجود"), "id");
+        Map<String, Object> trainee = userWithRole(r.param(0), "trainee", "المتدرب غير موجود");
+        final String id = s(trainee, "id");
+        Server.securityLog("admin_deleted_trainee", r.ip, "by=" + r.user.get("email") + " trainee=" + trainee.get("email"));
         db.removeIf("enrollments", x -> id.equals(x.get("userId")));
         db.removeIf("watches", x -> id.equals(x.get("userId")));
         db.removeIf("attempts", x -> id.equals(x.get("userId")));

@@ -110,6 +110,23 @@ public final class Server implements HttpHandler {
 
     public void mediaGuard(MediaGuard guard) { this.mediaGuard = guard; }
 
+    /**
+     * Writes one line to the server log (Render > Logs) for a security-relevant event, e.g.
+     * {@code SECURITY 2026-10-09T01:46:30Z login_failed ip=1.2.3.4 email=a@b.c}. Never logs passwords or tokens.
+     */
+    static void securityLog(String event, String ip, String details) {
+        String line = "SECURITY " + java.time.Instant.now().truncatedTo(java.time.temporal.ChronoUnit.SECONDS) + " " + event
+                + " ip=" + (ip == null || ip.isEmpty() ? "-" : ip) + (details == null || details.isEmpty() ? "" : " " + details);
+        System.out.println(line.replaceAll("[\\r\\n]", " "));
+    }
+
+    private static String clientIp(HttpExchange ex) {
+        String forwarded = ex.getRequestHeaders().getFirst("X-Forwarded-For");
+        if (forwarded != null && !forwarded.trim().isEmpty()) return forwarded.split(",")[0].trim();
+        InetSocketAddress remote = ex.getRemoteAddress();
+        return remote == null || remote.getAddress() == null ? "" : remote.getAddress().getHostAddress();
+    }
+
     public void start(String host, int port) throws IOException {
         HttpServer http = HttpServer.create(new InetSocketAddress(host, port), 0);
         http.createContext("/", this);
@@ -150,17 +167,21 @@ public final class Server implements HttpHandler {
             pathKnown = true;
             if (r.method.equals(method)) { route = r; matcher = m; break; }
         }
+        String ip = clientIp(ex);
         if (route == null) {
+            if (!pathKnown) securityLog("unknown_api_path", ip, method + " " + path);   // many of these = someone probing
             json(ex, pathKnown ? 405 : 404, error("المسار غير موجود"));
             return;
         }
         // Custom header forces a CORS preflight, so other sites cannot forge state-changing requests.
         if (!method.equals("GET") && !"itqan".equals(ex.getRequestHeaders().getFirst("X-Requested-With"))) {
+            securityLog("request_blocked_missing_header", ip, method + " " + path);
             json(ex, 403, error("طلب غير مسموح"));
             return;
         }
 
         Req req = new Req(ex);
+        req.ip = ip;
         req.params = new String[matcher.groupCount()];
         for (int i = 0; i < req.params.length; i++) req.params[i] = matcher.group(i + 1);
         req.query = parseQuery(ex.getRequestURI().getRawQuery());
@@ -168,8 +189,13 @@ public final class Server implements HttpHandler {
         synchronized (store) { req.user = sessionUser(req.token); }
 
         if (route.role != null) {
-            if (req.user == null) { json(ex, 401, error("يجب تسجيل الدخول أولًا")); return; }
+            if (req.user == null) {
+                securityLog("not_signed_in", ip, method + " " + path);
+                json(ex, 401, error("يجب تسجيل الدخول أولًا"));
+                return;
+            }
             if (!route.role.equals("any") && !route.role.equals(req.user.get("role"))) {
+                securityLog("access_denied", ip, method + " " + path + " user=" + req.user.get("email") + " role=" + req.user.get("role"));
                 json(ex, 403, error("ليست لديك صلاحية للوصول إلى هذه الصفحة"));
                 return;
             }

@@ -17,6 +17,8 @@ public final class Req {
     Map<String, Object> body = new LinkedHashMap<>();
     Map<String, Object> user;
     String token;
+    /** The visitor's address (the first X-Forwarded-For entry behind a proxy); used only for the security log. */
+    String ip = "";
     Upload upload;
     String setCookie;
 
