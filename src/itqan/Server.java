@@ -16,6 +16,7 @@ import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
@@ -262,17 +263,70 @@ public final class Server implements HttpHandler {
 
     private Req.Upload receiveUpload(HttpExchange ex, String originalName) throws IOException {
         Files.createDirectories(uploadDir);
-        String ext = extension(originalName);
-        Path target = uploadDir.resolve(Store.newId(20) + (ext.isEmpty() ? "" : "." + ext));
+        // Stream to a name with no extension first; the real type is decided from the bytes below,
+        // never from the Content-Type header or the file name (both are sent by the client).
+        String base = Store.newId(20);
+        Path staged = uploadDir.resolve(base);
         long size;
         try (InputStream in = ex.getRequestBody()) {
-            size = Files.copy(in, target);
+            size = Files.copy(in, staged);
         }
-        String mime = ex.getRequestHeaders().getFirst("Content-Type");
-        if (mime == null || mime.isEmpty() || mime.startsWith("application/octet-stream")) {
-            mime = MIME.getOrDefault(ext, "application/octet-stream");
+        String[] type = sniff(staged);   // {kind, extension, mime} for an allowed file, or null
+        if (type == null) {
+            return new Req.Upload(staged, originalName, "application/octet-stream", size, "other");
         }
-        return new Req.Upload(target, originalName, mime.toLowerCase(Locale.ROOT), size);
+        Path target = uploadDir.resolve(base + "." + type[1]);
+        Files.move(staged, target, StandardCopyOption.REPLACE_EXISTING);
+        return new Req.Upload(target, originalName, type[2], size, type[0]);
+    }
+
+    /**
+     * Decides what an uploaded file really is from its first bytes, so a file cannot be served as a type
+     * it is not (e.g. an HTML or script file disguised as an image). Returns {kind, extension, mime} for an
+     * allowed image or video, or null for anything else. SVG is deliberately rejected: it can carry scripts.
+     */
+    static String[] sniff(Path file) throws IOException {
+        byte[] b = new byte[64];
+        int n;
+        try (InputStream in = Files.newInputStream(file)) {
+            n = in.readNBytes(b, 0, b.length);
+        }
+        if (n < 12) return null;
+        if (match(b, 0, 0x89, 0x50, 0x4E, 0x47)) return new String[] {"image", "png", "image/png"};
+        if (match(b, 0, 0xFF, 0xD8, 0xFF)) return new String[] {"image", "jpg", "image/jpeg"};
+        if (match(b, 0, 'G', 'I', 'F', '8')) return new String[] {"image", "gif", "image/gif"};
+        if (match(b, 0, 'R', 'I', 'F', 'F') && match(b, 8, 'W', 'E', 'B', 'P')) return new String[] {"image", "webp", "image/webp"};
+        // ISO base media (mp4/mov/m4v/avif): the "ftyp" box at offset 4, the brand at offset 8.
+        if (match(b, 4, 'f', 't', 'y', 'p')) {
+            String brand = ascii(b, 8, 4);
+            if (brand.equals("qt  ")) return new String[] {"video", "mov", "video/quicktime"};
+            if (brand.startsWith("M4V")) return new String[] {"video", "m4v", "video/mp4"};
+            if (brand.startsWith("avif") || brand.startsWith("avis")) return new String[] {"image", "avif", "image/avif"};
+            return new String[] {"video", "mp4", "video/mp4"};
+        }
+        // Matroska / WebM share the EBML header; the DocType in the first bytes tells them apart.
+        if (match(b, 0, 0x1A, 0x45, 0xDF, 0xA3)) {
+            String head = ascii(b, 0, n).toLowerCase(Locale.ROOT);
+            if (head.contains("matroska")) return new String[] {"video", "mkv", "video/x-matroska"};
+            return new String[] {"video", "webm", "video/webm"};
+        }
+        if (match(b, 0, 'O', 'g', 'g', 'S')) return new String[] {"video", "ogg", "video/ogg"};
+        return null;
+    }
+
+    private static boolean match(byte[] b, int off, int... bytes) {
+        if (off + bytes.length > b.length) return false;
+        for (int i = 0; i < bytes.length; i++) if ((b[off + i] & 0xff) != (bytes[i] & 0xff)) return false;
+        return true;
+    }
+
+    private static String ascii(byte[] b, int off, int len) {
+        StringBuilder sb = new StringBuilder();
+        for (int i = off; i < off + len && i < b.length; i++) {
+            int c = b[i] & 0xff;
+            sb.append(c >= 32 && c < 127 ? (char) c : '.');
+        }
+        return sb.toString();
     }
 
     @SuppressWarnings("unchecked")

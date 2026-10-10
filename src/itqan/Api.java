@@ -25,7 +25,6 @@ import java.util.regex.Pattern;
 final class Api {
     private static final SecureRandom RANDOM = new SecureRandom();
     private static final Pattern EMAIL = Pattern.compile("^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$");
-    private static final Set<String> VIDEO_EXT = new HashSet<>(Arrays.asList("mp4", "m4v", "webm", "ogg", "ogv", "mov", "mkv"));
     private static final Set<String> DIFFICULTIES = new HashSet<>(Arrays.asList("easy", "medium", "hard"));
     private static final long MAX_COVER_BYTES = 8L * 1024 * 1024;
     /** Submissions arriving this long after the deadline are still accepted (network delay). */
@@ -467,10 +466,6 @@ final class Api {
                 "createdAt", e.get("createdAt"));
     }
 
-    private boolean isVideo(Req.Upload u) {
-        return u.mime.startsWith("video/") || VIDEO_EXT.contains(Server.extension(u.name));
-    }
-
     /** Inserts or moves a video to a 1-based position (0 or out of range = last) and renumbers the course. */
     private void placeVideo(String courseId, Map<String, Object> video, long position) {
         List<Map<String, Object>> ordered = videosOf(courseId);
@@ -673,7 +668,7 @@ final class Api {
         Map<String, Object> c = ownCourse(r, r.param(0));
         Req.Upload u = r.upload;
         if (u.size == 0) throw bad("الملف فارغ");
-        if (!u.mime.startsWith("image/")) throw bad("صورة الغلاف يجب أن تكون ملف صورة");
+        if (!"image".equals(u.kind)) throw bad("صورة الغلاف يجب أن تكون صورة صالحة (PNG أو JPG أو WEBP أو GIF)");
         if (u.size > MAX_COVER_BYTES) throw bad("حجم صورة الغلاف يجب ألا يتجاوز 8 ميجابايت");
         deleteFile(s(c, "cover"));
         c.put("cover", u.storedName());
@@ -687,7 +682,7 @@ final class Api {
         String title = text(r.q("title"), 150, "أدخل عنوان المقطع");
         String description = text(r.q("description"), 3000, null);
         if (u.size == 0) throw bad("الملف فارغ");
-        if (!isVideo(u)) throw bad("الملف يجب أن يكون مقطع فيديو (mp4 أو webm مثلًا)");
+        if (!"video".equals(u.kind)) throw bad("الملف يجب أن يكون مقطع فيديو صالح (mp4 أو webm مثلًا)");
         long position;
         try { position = Long.parseLong(r.q("position")); } catch (NumberFormatException e) { position = 0; }
         Map<String, Object> v = db.insert("videos", obj("courseId", c.get("id"), "title", title, "description", description,
@@ -773,7 +768,7 @@ final class Api {
         String existing = s(l, "recordingVideoId");
         if (!existing.isEmpty() && db.find("videos", existing) != null) throw bad("تم رفع تسجيل هذا البث مسبقًا");
         if (u.size == 0) throw bad("الملف فارغ");
-        if (!isVideo(u)) throw bad("الملف يجب أن يكون مقطع فيديو (mp4 أو webm مثلًا)");
+        if (!"video".equals(u.kind)) throw bad("الملف يجب أن يكون مقطع فيديو صالح (mp4 أو webm مثلًا)");
         String title = r.q("title").isEmpty() ? s(l, "title") : text(r.q("title"), 150, null);
         String courseId = s(l, "courseId");
         Map<String, Object> v = db.insert("videos", obj("courseId", courseId, "title", title,

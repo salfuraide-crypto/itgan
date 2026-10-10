@@ -81,13 +81,16 @@ public final class Req {
         final String name;
         final String mime;
         final long size;
+        /** What the file actually is, decided from its bytes: "image", "video" or "other". */
+        final String kind;
         boolean kept;
 
-        Upload(Path file, String name, String mime, long size) {
+        Upload(Path file, String name, String mime, long size, String kind) {
             this.file = file;
             this.name = name;
             this.mime = mime;
             this.size = size;
+            this.kind = kind;
         }
 
         String storedName() { return file.getFileName().toString(); }
