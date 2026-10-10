@@ -38,6 +38,13 @@ final class Api {
     /** Wrong passwords allowed for one email within LOGIN_WINDOW_MS before sign-in is paused for that email. */
     static final int MAX_LOGIN_FAILURES = 5;
     static final long LOGIN_WINDOW_MS = 15 * 60_000L;
+    /**
+     * Failed sign-ins allowed from one IP address per minute before it is throttled. Only FAILURES count,
+     * so many legitimate users behind one shared address (a school or office) are never blocked; it stops a
+     * single source from rapidly guessing passwords. The window is short so an accidental trip clears quickly.
+     */
+    static final int MAX_AUTH_FAILURES_PER_IP = 20;
+    static final long AUTH_IP_WINDOW_MS = 60_000L;
     /** Hashed when the email is unknown, so a wrong email takes as long as a wrong password. */
     private static final String DUMMY_SALT = "AAAAAAAAAAAAAAAAAAAAAA==";
 
@@ -46,6 +53,8 @@ final class Api {
     private final R2 r2;
     /** Recent wrong passwords per email: {failures, window start, paused until}. Kept in memory only. */
     private final Map<String, long[]> loginFailures = new java.util.HashMap<>();
+    /** Recent failed sign-ins per IP: {failures, window start}. Caps guessing from one source. In memory only. */
+    private final Map<String, long[]> authFailuresByIp = new java.util.HashMap<>();
 
     /** r2 is null when uploads stay on the local disk. */
     Api(Store db, Path uploadDir, R2 r2) {
@@ -55,8 +64,8 @@ final class Api {
     }
 
     void register(Server s) {
-        s.route("POST", "/api/auth/register", null, this::register);
-        s.route("POST", "/api/auth/login", null, this::login);
+        s.routeUnlocked("POST", "/api/auth/register", null, this::register);
+        s.routeUnlocked("POST", "/api/auth/login", null, this::login);
         s.route("POST", "/api/auth/logout", null, this::logout);
         s.route("GET", "/api/me", null, this::me);
 
@@ -260,43 +269,100 @@ final class Api {
         if (email.length() > 120 || !EMAIL.matcher(email).matches()) throw bad("البريد الإلكتروني غير صالح");
         String password = r.raw("password");
         checkNewPassword(password);
-        if (userByEmail(email) != null) throw new ApiError(409, "هذا البريد مسجّل مسبقًا، جرّب تسجيل الدخول");
-        Map<String, Object> user = createUser(name, email, password, "trainee");
-        Server.securityLog("account_registered", r.ip, "email=" + email);
-        startSession(r, user);
-        return obj("user", publicUser(user));
+        synchronized (db) {
+            if (userByEmail(email) != null) throw new ApiError(409, "هذا البريد مسجّل مسبقًا، جرّب تسجيل الدخول");
+        }
+        // Hash the new password OUTSIDE the lock so a burst of sign-ups does not block the rest of the site.
+        String salt = newSalt();
+        String passwordHash = hash(password, salt, HASH_ROUNDS);
+        synchronized (db) {
+            if (userByEmail(email) != null) throw new ApiError(409, "هذا البريد مسجّل مسبقًا، جرّب تسجيل الدخول");
+            Map<String, Object> u = obj("name", name, "email", email, "role", "trainee",
+                    "salt", salt, "passwordHash", passwordHash, "rounds", (long) HASH_ROUNDS);
+            Map<String, Object> user = db.insert("users", u);
+            Server.securityLog("account_registered", r.ip, "email=" + email);
+            startSession(r, user);
+            db.flush();
+            return obj("user", publicUser(user));
+        }
     }
 
     private Object login(Req r) {
         String key = r.str("email").toLowerCase(Locale.ROOT);
+        String password = r.raw("password");
         long now = now();
-        long[] f = loginFailures.get(key);
-        if (f != null && f[2] > now) {
-            Server.securityLog("login_while_paused", r.ip, "email=" + key);
-            long minutes = Math.max(1, (f[2] - now + 59_999) / 60_000);
-            throw new ApiError(429, "محاولات دخول خاطئة كثيرة لهذا الحساب. حاول مرة أخرى بعد " + minutes + " دقيقة.");
+        if (ipThrottled(r.ip, now)) {
+            Server.securityLog("auth_rate_limited_ip", r.ip, "login email=" + key);
+            throw new ApiError(429, "محاولات دخول خاطئة كثيرة من هذا الجهاز. انتظر دقيقة وحاول مرة أخرى.");
         }
-        Map<String, Object> user = userByEmail(key);
-        if (user == null) hash(r.raw("password"), DUMMY_SALT, HASH_ROUNDS);
-        if (user == null || !checkPassword(user, r.raw("password"))) {
-            boolean paused = recordLoginFailure(key, now);
-            Server.securityLog("login_failed", r.ip, "email=" + key + (user == null ? " (no such account)" : ""));
-            if (paused) Server.securityLog("login_paused_15min", r.ip, "email=" + key);
-            throw new ApiError(401, "البريد الإلكتروني أو كلمة المرور غير صحيحة");
+        // Read just what the hash needs while briefly holding the lock; the slow hashing happens afterwards.
+        String salt, expectedHash;
+        long rounds;
+        Map<String, Object> user;
+        synchronized (db) {
+            long[] f = loginFailures.get(key);
+            if (f != null && f[2] > now) {
+                Server.securityLog("login_while_paused", r.ip, "email=" + key);
+                long minutes = Math.max(1, (f[2] - now + 59_999) / 60_000);
+                throw new ApiError(429, "محاولات دخول خاطئة كثيرة لهذا الحساب. حاول مرة أخرى بعد " + minutes + " دقيقة.");
+            }
+            user = userByEmail(key);
+            salt = user == null ? DUMMY_SALT : s(user, "salt");          // unknown email still hashes (same timing)
+            rounds = user == null ? HASH_ROUNDS : n(user, "rounds");
+            expectedHash = user == null ? null : s(user, "passwordHash");
         }
-        loginFailures.remove(key);
-        Server.securityLog("login_ok", r.ip, "email=" + key + " role=" + user.get("role"));
-        if (n(user, "rounds") < HASH_ROUNDS) {
-            setPassword(user, r.raw("password"));   // upgrade an older, weaker hash now that we know the password
-            db.touch();
+
+        // Heavy PBKDF2 runs OUTSIDE the lock, so one sign-in does not block the rest of the site.
+        String actual = hash(password, salt, rounds > 0 ? (int) rounds : LEGACY_ROUNDS);
+        boolean ok = expectedHash != null
+                && MessageDigest.isEqual(expectedHash.getBytes(StandardCharsets.UTF_8), actual.getBytes(StandardCharsets.UTF_8));
+
+        synchronized (db) {
+            if (!ok) {
+                boolean paused = recordLoginFailure(key, now);
+                recordIpFailure(r.ip, now);
+                Server.securityLog("login_failed", r.ip, "email=" + key + (user == null ? " (no such account)" : ""));
+                if (paused) Server.securityLog("login_paused_15min", r.ip, "email=" + key);
+                throw new ApiError(401, "البريد الإلكتروني أو كلمة المرور غير صحيحة");
+            }
+            loginFailures.remove(key);
+            Server.securityLog("login_ok", r.ip, "email=" + key + " role=" + user.get("role"));
+            if (n(user, "rounds") < HASH_ROUNDS) {
+                setPassword(user, password);   // upgrade an older, weaker hash now that we know the password
+                db.touch();
+            }
+            // The staff portal serves trainers and the admin; the trainee page serves trainees only.
+            boolean staffPortal = "trainer".equals(r.str("role"));
+            boolean isStaff = "trainer".equals(user.get("role")) || "admin".equals(user.get("role"));
+            if (staffPortal && !isStaff) throw new ApiError(403, "هذا الحساب ليس حساب مدرب، ادخل من صفحة دخول المتدربين");
+            if (!staffPortal && isStaff) throw new ApiError(403, "هذا حساب مدرب أو إدارة، ادخل من بوابة المدربين");
+            startSession(r, user);
+            db.flush();
+            return obj("user", publicUser(user));
         }
-        // The staff portal serves trainers and the admin; the trainee page serves trainees only.
-        boolean staffPortal = "trainer".equals(r.str("role"));
-        boolean isStaff = "trainer".equals(user.get("role")) || "admin".equals(user.get("role"));
-        if (staffPortal && !isStaff) throw new ApiError(403, "هذا الحساب ليس حساب مدرب، ادخل من صفحة دخول المتدربين");
-        if (!staffPortal && isStaff) throw new ApiError(403, "هذا حساب مدرب أو إدارة، ادخل من بوابة المدربين");
-        startSession(r, user);
-        return obj("user", publicUser(user));
+    }
+
+    /** True when this IP has already failed sign-in too many times in the current minute. Checked before hashing. */
+    private boolean ipThrottled(String ip, long now) {
+        if (ip == null || ip.isEmpty()) return false;
+        synchronized (authFailuresByIp) {
+            long[] h = authFailuresByIp.get(ip);
+            return h != null && now - h[1] <= AUTH_IP_WINDOW_MS && h[0] >= MAX_AUTH_FAILURES_PER_IP;
+        }
+    }
+
+    /** Counts one failed sign-in from this IP, resetting the count when its minute window has passed. */
+    private void recordIpFailure(String ip, long now) {
+        if (ip == null || ip.isEmpty()) return;
+        synchronized (authFailuresByIp) {
+            if (authFailuresByIp.size() > 50_000) authFailuresByIp.values().removeIf(x -> now - x[1] > AUTH_IP_WINDOW_MS);
+            long[] h = authFailuresByIp.get(ip);
+            if (h == null || now - h[1] > AUTH_IP_WINDOW_MS) {
+                h = new long[] {0, now};
+                authFailuresByIp.put(ip, h);
+            }
+            h[0]++;
+        }
     }
 
     /** Counts a wrong password; returns true when this one paused sign-in for the email. */

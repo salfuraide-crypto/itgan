@@ -39,6 +39,12 @@ public final class App {
         }
 
         Server server = new Server(store, base.resolve("web"), uploads, r2);
+        // ITQAN_MAX_UPLOAD_MB caps the size of an uploaded file (default 1024 MB = 1 GB).
+        try {
+            server.maxUploadBytes(Long.parseLong(env("ITQAN_MAX_UPLOAD_MB", "1024")) * 1024 * 1024);
+        } catch (NumberFormatException ignored) {
+            // keep the default
+        }
         api.register(server);
 
         int port = port(args);

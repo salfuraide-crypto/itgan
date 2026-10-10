@@ -73,13 +73,16 @@ public final class Server implements HttpHandler {
         final Pattern pattern;
         final String role;
         final boolean upload;
+        /** When false, the handler runs without the global data lock and locks internally instead. */
+        final boolean locked;
         final Handler handler;
 
-        Route(String method, String path, String role, boolean upload, Handler handler) {
+        Route(String method, String path, String role, boolean upload, boolean locked, Handler handler) {
             this.method = method;
             this.pattern = Pattern.compile("^" + path.replace("{id}", "([A-Za-z0-9]+)") + "$");
             this.role = role;
             this.upload = upload;
+            this.locked = locked;
             this.handler = handler;
         }
     }
@@ -90,6 +93,11 @@ public final class Server implements HttpHandler {
     private final List<Route> routes = new ArrayList<>();
     private final R2 r2;
     private MediaGuard mediaGuard = (u, f) -> false;
+    /** Largest upload accepted, enforced while streaming so one huge upload cannot fill the disk. */
+    private long maxUploadBytes = 1024L * 1024 * 1024;   // 1 GB
+
+    /** Sets the largest accepted upload, in bytes. */
+    public void maxUploadBytes(long bytes) { this.maxUploadBytes = bytes; }
 
     /** r2 is null when uploads stay on the local disk. */
     public Server(Store store, Path webDir, Path uploadDir, R2 r2) {
@@ -101,12 +109,20 @@ public final class Server implements HttpHandler {
 
     /** Registers a JSON endpoint. role: null = public, "any" = signed in, otherwise the required role. */
     public void route(String method, String path, String role, Handler handler) {
-        routes.add(new Route(method, path, role, false, handler));
+        routes.add(new Route(method, path, role, false, true, handler));
+    }
+
+    /**
+     * Like {@link #route}, but the handler runs WITHOUT the global data lock and takes the lock itself only
+     * for the quick parts. Used by the password endpoints so their slow hashing does not block the whole site.
+     */
+    public void routeUnlocked(String method, String path, String role, Handler handler) {
+        routes.add(new Route(method, path, role, false, false, handler));
     }
 
     /** Registers an endpoint whose request body is a raw file (query string carries the other fields). */
     public void upload(String path, String role, Handler handler) {
-        routes.add(new Route("POST", path, role, true, handler));
+        routes.add(new Route("POST", path, role, true, true, handler));
     }
 
     public void mediaGuard(MediaGuard guard) { this.mediaGuard = guard; }
@@ -220,14 +236,21 @@ public final class Server implements HttpHandler {
             } else if (!method.equals("GET")) req.body = readJsonBody(ex);
 
             String out;
-            synchronized (store) {
-                try {
-                    Object result = route.handler.handle(req);
-                    out = Json.stringify(result == null ? okBody() : result);
-                } finally {
-                    if (!method.equals("GET")) store.touch();
-                    store.flush();
+            if (route.locked) {
+                synchronized (store) {
+                    try {
+                        Object result = route.handler.handle(req);
+                        out = Json.stringify(result == null ? okBody() : result);
+                    } finally {
+                        if (!method.equals("GET")) store.touch();
+                        store.flush();
+                    }
                 }
+            } else {
+                // The handler does its own fine-grained locking (and flushing) so the heavy password
+                // hashing inside it runs in parallel instead of blocking every other request.
+                Object result = route.handler.handle(req);
+                out = Json.stringify(result == null ? okBody() : result);
             }
             if (req.setCookie != null) ex.getResponseHeaders().add("Set-Cookie", req.setCookie);
             json(ex, 200, out);
@@ -267,9 +290,21 @@ public final class Server implements HttpHandler {
         // never from the Content-Type header or the file name (both are sent by the client).
         String base = Store.newId(20);
         Path staged = uploadDir.resolve(base);
-        long size;
-        try (InputStream in = ex.getRequestBody()) {
-            size = Files.copy(in, staged);
+        long size = 0;
+        // Copy with a hard size cap, enforced as we stream, so an oversized upload is stopped early
+        // and never fills the disk.
+        try (InputStream in = ex.getRequestBody(); OutputStream out = Files.newOutputStream(staged)) {
+            byte[] buf = new byte[64 * 1024];
+            int n;
+            while ((n = in.read(buf)) > 0) {
+                size += n;
+                if (size > maxUploadBytes) {
+                    out.close();
+                    Files.deleteIfExists(staged);
+                    throw new ApiError(413, "حجم الملف يتجاوز الحد المسموح (" + (maxUploadBytes / (1024 * 1024)) + " ميجابايت)");
+                }
+                out.write(buf, 0, n);
+            }
         }
         String[] type = sniff(staged);   // {kind, extension, mime} for an allowed file, or null
         if (type == null) {
